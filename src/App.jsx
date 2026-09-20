@@ -27,10 +27,10 @@ function starterProject() {
         blocks: [
           { id: uid('line'), type: 'dialogue', speakerId: sus, text: '오늘은 어디로 갈까?' },
           { id: uid('line'), type: 'dialogue', speakerId: min, text: '나는 카페에 가고 싶어.' },
-          { id: uid('choice'), type: 'choice', prompt: '어디로 갈까?', options: [
-            { id: uid('opt'), text: '카페에 간다', targetId: s2 },
-            { id: uid('opt'), text: '집에 간다', targetId: s1 },
-            { id: uid('opt'), text: '민지를 따라간다', targetId: e1 },
+          { id: uid('choice'), type: 'choice', prompt: '어디로 갈까?', reactive: false, reactiveTargetId: '', options: [
+            { id: uid('opt'), text: '카페에 간다', targetId: s2, responseSpeakerId: null, responseText: '' },
+            { id: uid('opt'), text: '집에 간다', targetId: s1, responseSpeakerId: null, responseText: '' },
+            { id: uid('opt'), text: '민지를 따라간다', targetId: e1, responseSpeakerId: null, responseText: '' },
           ] },
         ],
       },
@@ -110,8 +110,15 @@ function makeInk(project) {
         }
         for (const option of block.options || []) {
           lines.push(`* ${escapeInk(option.text || '선택지')}`);
-          const target = project.scenes.find(s => s.id === option.targetId);
-          const ending = project.endings.find(e => e.id === option.targetId);
+          if (block.reactive && option.responseText?.trim()) {
+            const responseSpeaker = project.characters.find(c => c.id === option.responseSpeakerId);
+            if (responseSpeaker) lines.push(`    ~ speaker = "${escapeInk(responseSpeaker.name)}"`);
+            else lines.push(`    ~ speaker = ""`);
+            lines.push(`    ${escapeInk(option.responseText)}`);
+          }
+          const optionTargetId = block.reactive ? block.reactiveTargetId : option.targetId;
+          const target = project.scenes.find(s => s.id === optionTargetId);
+          const ending = project.endings.find(e => e.id === optionTargetId);
           lines.push(`    -> ${target ? sceneKey(target.id) : ending ? endingKey(ending.id) : sceneKey(scene.id)}`);
         }
       }
@@ -159,6 +166,11 @@ function safeName(name) {
   return String(name || 'scenario').replace(/[\\/:*?"<>|]/g, '_').trim() || 'scenario';
 }
 
+function getAuthRedirectUrl() {
+  if (typeof window === 'undefined') return undefined;
+  return `${window.location.origin}${import.meta.env.BASE_URL}`;
+}
+
 function AuthBox({ user, onUserChange, onRefresh }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -167,15 +179,27 @@ function AuthBox({ user, onUserChange, onRefresh }) {
 
   const signIn = async (mode) => {
     if (!supabaseEnabled) return;
+    if (!email.trim() || !password) {
+      setMessage('이메일과 비밀번호를 입력해줘.');
+      return;
+    }
     setBusy(true);
     setMessage('');
     try {
       const result = mode === 'signup'
-        ? await supabase.auth.signUp({ email, password })
-        : await supabase.auth.signInWithPassword({ email, password });
+        ? await supabase.auth.signUp({
+            email: email.trim(),
+            password,
+            options: { emailRedirectTo: getAuthRedirectUrl() },
+          })
+        : await supabase.auth.signInWithPassword({ email: email.trim(), password });
       if (result.error) throw result.error;
-      setMessage(mode === 'signup' ? '가입 요청을 보냈어. 이메일 확인이 필요한 설정이라면 메일도 확인해줘.' : '로그인 완료!');
-      await onRefresh();
+      if (mode === 'signup' && !result.data?.session) {
+        setMessage('가입 완료! 이메일 확인을 마친 뒤 같은 이메일/비밀번호로 로그인해줘.');
+      } else {
+        setMessage('로그인 완료!');
+        await onRefresh();
+      }
     } catch (error) {
       setMessage(error.message || '인증 중 오류가 발생했어.');
     } finally {
@@ -205,7 +229,8 @@ function AuthBox({ user, onUserChange, onRefresh }) {
       <div className="cloud-card">
         <div className="tiny-label">CLOUD SYNC</div>
         <strong>{user.email}</strong>
-        <p>이 프로젝트는 로그인한 계정에 저장돼.</p>
+        <p>같은 계정으로 로그인한 기기와 자동 동기화돼.</p>
+        <div className="cloud-sync-note">변경 후 잠시 기다리면 클라우드에 자동 저장돼.</div>
         <button className="ghost-btn full" onClick={signOut}>로그아웃</button>
       </div>
     );
@@ -215,9 +240,9 @@ function AuthBox({ user, onUserChange, onRefresh }) {
     <div className="cloud-card">
       <div className="tiny-label">CLOUD SYNC</div>
       <strong>PC ↔ 모바일 동기화</strong>
-      <p>같은 계정으로 로그인하면 프로젝트를 불러올 수 있어.</p>
-      <input className="auth-input" placeholder="이메일" value={email} onChange={e => setEmail(e.target.value)} />
-      <input className="auth-input" type="password" placeholder="비밀번호" value={password} onChange={e => setPassword(e.target.value)} />
+      <p>같은 계정으로 로그인하면 마지막으로 저장한 프로젝트를 불러와.</p>
+      <input className="auth-input" placeholder="이메일" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" />
+      <input className="auth-input" type="password" placeholder="비밀번호 (6자 이상)" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === 'Enter' && signIn('signin')} autoComplete="current-password" />
       <div className="auth-actions">
         <button className="dark-btn" disabled={busy} onClick={() => signIn('signin')}>로그인</button>
         <button className="ghost-btn" disabled={busy} onClick={() => signIn('signup')}>회원가입</button>
@@ -248,6 +273,8 @@ function App() {
   const [previewSceneId, setPreviewSceneId] = useState(null);
   const [previewBlockIndex, setPreviewBlockIndex] = useState(0);
   const [previewEndingId, setPreviewEndingId] = useState(null);
+  const [previewReaction, setPreviewReaction] = useState(null);
+  const [mobileCloudOpen, setMobileCloudOpen] = useState(false);
   const [newChar, setNewChar] = useState('');
   const [newScene, setNewScene] = useState('');
   const [newEnding, setNewEnding] = useState('');
@@ -293,7 +320,7 @@ function App() {
   const loadCloud = useCallback(async (currentUser) => {
     if (!supabase || !currentUser) return;
     try {
-      const { data, error } = await supabase.from('projects').select('*').order('updated_at', { ascending: false }).limit(1);
+      const { data, error } = await supabase.from('projects').select('*').eq('user_id', currentUser.id).order('updated_at', { ascending: false }).limit(1);
       if (error) throw error;
       if (data?.[0]?.data) {
         const next = normalizeProject(data[0].data);
@@ -303,7 +330,11 @@ function App() {
         setStatus('클라우드에서 불러옴');
       } else {
         const next = project;
-        await supabase.from('projects').insert({ id: next.id, user_id: currentUser.id, name: next.name, data: next });
+        const { error: insertError } = await supabase
+          .from('projects')
+          .insert({ id: next.id, user_id: currentUser.id, name: next.name, data: next });
+        if (insertError) throw insertError;
+        setStatus('클라우드 저장됨');
       }
     } catch (error) {
       console.error(error);
@@ -320,11 +351,10 @@ function App() {
 
   useEffect(() => {
     if (!supabase) return undefined;
-    refreshAuth();
     const { data: subscription } = supabase.auth.onAuthStateChange((_event, session) => {
-      const nextUser = session?.user || null;
-      setUser(nextUser);
+      setUser(session?.user || null);
     });
+    refreshAuth();
     return () => subscription.subscription.unsubscribe();
   }, [refreshAuth]);
 
@@ -423,12 +453,14 @@ function App() {
     setPreviewSceneId(project.scenes[0]?.id || null);
     setPreviewBlockIndex(0);
     setPreviewEndingId(null);
+    setPreviewReaction(null);
   };
 
   const previewScene = project.scenes.find(s => s.id === previewSceneId);
   const previewBlock = previewScene?.blocks?.[previewBlockIndex];
 
   const goPreviewNext = (targetId) => {
+    setPreviewReaction(null);
     const targetScene = project.scenes.find(s => s.id === targetId);
     const targetEnding = project.endings.find(e => e.id === targetId);
     if (targetScene) {
@@ -441,6 +473,18 @@ function App() {
       setPreviewBlockIndex(-1);
       setPreviewEndingId(targetEnding.id);
     }
+  };
+
+  const selectPreviewOption = (block, option) => {
+    if (block.reactive && option.responseText?.trim()) {
+      setPreviewReaction({
+        speakerId: option.responseSpeakerId || null,
+        text: option.responseText,
+        targetId: block.reactive ? (block.reactiveTargetId || null) : (option.targetId || null),
+      });
+      return;
+    }
+    goPreviewNext(block.reactive ? block.reactiveTargetId : option.targetId);
   };
 
   return (
@@ -514,6 +558,25 @@ function App() {
           </div>
         </header>
 
+        <nav className="mobile-nav" aria-label="모바일 메뉴">
+          <div className="mobile-nav-main">
+            <button className={selectedTab === 'script' ? 'active' : ''} onClick={() => setSelectedTab('script')}>대본</button>
+            <button className={selectedTab === 'characters' ? 'active' : ''} onClick={() => setSelectedTab('characters')}>등장인물</button>
+            <button className={selectedTab === 'endings' ? 'active' : ''} onClick={() => setSelectedTab('endings')}>엔딩</button>
+            <button className={mobileCloudOpen ? 'active' : ''} onClick={() => setMobileCloudOpen(v => !v)}>☁ 동기화</button>
+          </div>
+          {selectedTab === 'script' && (
+            <select
+              className="mobile-scene-select"
+              value={selectedSceneId || ''}
+              onChange={e => setSelectedSceneId(e.target.value)}
+            >
+              {project.scenes.map((scene, i) => <option key={scene.id} value={scene.id}>{String(i + 1).padStart(2, '0')} · {scene.name}</option>)}
+            </select>
+          )}
+          {mobileCloudOpen && <div className="mobile-cloud-panel"><AuthBox user={user} onUserChange={setUser} onRefresh={refreshAuth} /></div>}
+        </nav>
+
         <div className="content-wrap">
           {selectedTab === 'script' && currentScene && (
             <section className="editor-card">
@@ -577,28 +640,79 @@ function App() {
                       <div className="choice-title-row">
                         <div className="choice-label">CHOICE</div>
                         <input className="choice-prompt" value={block.prompt || ''} placeholder="선택지 앞에 표시할 안내문 (선택)" onChange={e => updateBlock(currentScene.id, block.id, b => ({ ...b, prompt: e.target.value }))} />
+                        <label className="choice-toggle">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(block.reactive)}
+                            onChange={e => updateBlock(currentScene.id, block.id, b => ({ ...b, reactive: e.target.checked, reactiveTargetId: e.target.checked ? (b.reactiveTargetId || b.options?.[0]?.targetId || '') : b.reactiveTargetId }))}
+                          />
+                          <span>반응형 선택지</span>
+                        </label>
                         <button className="row-delete" onClick={() => deleteBlock(currentScene.id, block.id)}>×</button>
                       </div>
+                      {block.reactive && <div className="choice-helper">선택 후 <b>1줄의 반응 대사</b>만 보여주고, 모든 선택지는 아래의 같은 다음 Scene/Ending으로 이어져.</div>}
+                      {block.reactive && (
+                        <div className="reactive-target-row">
+                          <span>공통 다음</span>
+                          <span className="arrow">→</span>
+                          <select
+                            value={block.reactiveTargetId || ''}
+                            onChange={e => updateBlock(currentScene.id, block.id, b => ({ ...b, reactiveTargetId: e.target.value }))}
+                          >
+                            <option value="">대상 선택</option>
+                            <optgroup label="Scenes">
+                              {project.scenes.map(scene => <option key={scene.id} value={scene.id}>{scene.name}</option>)}
+                            </optgroup>
+                            <optgroup label="Endings">
+                              {project.endings.map(ending => <option key={ending.id} value={ending.id}>{ending.name}</option>)}
+                            </optgroup>
+                          </select>
+                        </div>
+                      )}
                       <div className="options-list">
                         {(block.options || []).map((option, optionIndex) => (
-                          <div className="option-row" key={option.id}>
-                            <span className="option-number">{optionIndex + 1}</span>
-                            <input value={option.text} placeholder="선택지" onChange={e => updateBlock(currentScene.id, block.id, b => ({ ...b, options: b.options.map(o => o.id === option.id ? { ...o, text: e.target.value } : o) }))} />
-                            <span className="arrow">→</span>
-                            <select value={option.targetId || ''} onChange={e => updateBlock(currentScene.id, block.id, b => ({ ...b, options: b.options.map(o => o.id === option.id ? { ...o, targetId: e.target.value } : o) }))}>
-                              <option value="">대상 선택</option>
-                              <optgroup label="Scenes">
-                                {project.scenes.map(scene => <option key={scene.id} value={scene.id}>{scene.name}</option>)}
-                              </optgroup>
-                              <optgroup label="Endings">
-                                {project.endings.map(ending => <option key={ending.id} value={ending.id}>{ending.name}</option>)}
-                              </optgroup>
-                            </select>
-                            <button className="row-delete" onClick={() => updateBlock(currentScene.id, block.id, b => ({ ...b, options: b.options.filter(o => o.id !== option.id) }))}>×</button>
+                          <div className={`option-wrap ${block.reactive ? 'is-reactive' : ''}`} key={option.id}>
+                            <div className="option-row">
+                              <span className="option-number">{optionIndex + 1}</span>
+                              <input value={option.text} placeholder="선택지" onChange={e => updateBlock(currentScene.id, block.id, b => ({ ...b, options: b.options.map(o => o.id === option.id ? { ...o, text: e.target.value } : o) }))} />
+                              {!block.reactive && (
+                                <>
+                                  <span className="arrow">→</span>
+                                  <select value={option.targetId || ''} onChange={e => updateBlock(currentScene.id, block.id, b => ({ ...b, options: b.options.map(o => o.id === option.id ? { ...o, targetId: e.target.value } : o) }))}>
+                                    <option value="">대상 선택</option>
+                                    <optgroup label="Scenes">
+                                      {project.scenes.map(scene => <option key={scene.id} value={scene.id}>{scene.name}</option>)}
+                                    </optgroup>
+                                    <optgroup label="Endings">
+                                      {project.endings.map(ending => <option key={ending.id} value={ending.id}>{ending.name}</option>)}
+                                    </optgroup>
+                                  </select>
+                                </>
+                              )}
+                              <button className="row-delete" onClick={() => updateBlock(currentScene.id, block.id, b => ({ ...b, options: b.options.filter(o => o.id !== option.id) }))}>×</button>
+                            </div>
+                            {block.reactive && (
+                              <div className="reaction-row">
+                                <div className="reaction-label">↳ 반응 대사</div>
+                                <select
+                                  value={option.responseSpeakerId || ''}
+                                  onChange={e => updateBlock(currentScene.id, block.id, b => ({ ...b, options: b.options.map(o => o.id === option.id ? { ...o, responseSpeakerId: e.target.value || null } : o) }))}
+                                >
+                                  <option value="">(독백)</option>
+                                  {project.characters.map(character => <option key={character.id} value={character.id}>{character.name}</option>)}
+                                </select>
+                                <input
+                                  className="reaction-text"
+                                  value={option.responseText || ''}
+                                  placeholder="이 선택지를 눌렀을 때 1번만 나오는 대사"
+                                  onChange={e => updateBlock(currentScene.id, block.id, b => ({ ...b, options: b.options.map(o => o.id === option.id ? { ...o, responseText: e.target.value } : o) }))}
+                                />
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
-                      <button className="add-option-btn" onClick={() => updateBlock(currentScene.id, block.id, b => ({ ...b, options: [...(b.options || []), { id: uid('opt'), text: '', targetId: '' }] }))}>＋ 선택지 추가</button>
+                      <button className="add-option-btn" onClick={() => updateBlock(currentScene.id, block.id, b => ({ ...b, options: [...(b.options || []), { id: uid('opt'), text: '', targetId: '', responseSpeakerId: null, responseText: '' }] }))}>＋ 선택지 추가</button>
                     </div>
                   ))}
                 </div>
@@ -606,7 +720,7 @@ function App() {
 
               <div className="editor-footer-actions">
                 <button className="add-dialogue-btn" onClick={() => addDialogueAfter(currentScene.id, currentScene.blocks.length - 1, currentScene.blocks.at(-1)?.type === 'dialogue' ? currentScene.blocks.at(-1).speakerId : null)}>＋ 대사</button>
-                <button className="add-choice-btn" onClick={() => updateScene(currentScene.id, scene => ({ ...scene, blocks: [...scene.blocks, { id: uid('choice'), type: 'choice', prompt: '', options: [{ id: uid('opt'), text: '', targetId: '' }] }] }))}>＋ 선택지</button>
+                <button className="add-choice-btn" onClick={() => updateScene(currentScene.id, scene => ({ ...scene, blocks: [...scene.blocks, { id: uid('choice'), type: 'choice', prompt: '', reactive: false, reactiveTargetId: '', options: [{ id: uid('opt'), text: '', targetId: '', responseSpeakerId: null, responseText: '' }] }] }))}>＋ 선택지</button>
               </div>
             </section>
           )}
@@ -675,7 +789,16 @@ function App() {
               <button onClick={() => setPreviewMode(false)}>닫기 ×</button>
             </div>
             <div className="preview-stage">
-              {!previewScene ? (
+              {previewReaction ? (
+                <div className="visualnovel-preview">
+                  <div className="preview-ghost-character" />
+                  <div className="dialogue-box">
+                    <div className="preview-speaker">{project.characters.find(c => c.id === previewReaction.speakerId)?.name || ''}</div>
+                    <div className="preview-text">{previewReaction.text}</div>
+                    <button className="next-arrow" onClick={() => goPreviewNext(previewReaction.targetId)}>›</button>
+                  </div>
+                </div>
+              ) : !previewScene ? (
                 <div className="preview-ending-screen">
                   <div className="preview-ending-kicker">ENDING</div>
                   <h2>{project.endings.find(e => e.id === previewEndingId)?.name || 'END'}</h2>
@@ -695,7 +818,7 @@ function App() {
                 <div className="choice-preview">
                   <div className="choice-preview-prompt">{previewBlock.prompt || '선택하세요.'}</div>
                   {(previewBlock.options || []).map(option => (
-                    <button key={option.id} className="preview-choice" onClick={() => goPreviewNext(option.targetId)}>{option.text || '선택지'}</button>
+                    <button key={option.id} className="preview-choice" onClick={() => selectPreviewOption(previewBlock, option)}>{option.text || '선택지'}</button>
                   ))}
                 </div>
               ) : (
