@@ -1,4 +1,4 @@
--- Scenario Editor v0.3 cloud sync schema
+-- Scenario Editor v0.4 cloud sync schema
 -- Run once in Supabase Dashboard > SQL Editor.
 -- IMPORTANT: use only the browser-safe publishable/anon key in the app.
 -- NEVER put the service_role key in the browser.
