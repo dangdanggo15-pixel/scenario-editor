@@ -343,3 +343,20 @@ kbd { display:inline-block; border:1px solid #d7d3cb; background:#f8f6f2; border
 .position-buttons button:disabled { opacity:.35; }
 .position-buttons button:not(:disabled):hover { color:#171717; transform:scale(1.08); }
 .preview-character-img { display:block; visibility:visible; opacity:1; pointer-events:none; }
+
+/* v0.7 export + auth + preview share */
+.auth-config-warning { margin:8px 0 10px; padding:9px 10px; border:1px solid #ead9b4; background:#fff8e8; color:#75613a; border-radius:7px; font-size:9px; line-height:1.5; }
+.export-title { margin:4px 0 0; font-size:24px; }
+.export-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; padding:18px; }
+.export-item { min-height:150px; border:1px solid #e2ded6; background:#faf9f6; border-radius:12px; padding:16px; display:flex; flex-direction:column; align-items:flex-start; gap:8px; }
+.export-item b { font-size:12px; letter-spacing:.08em; }
+.export-item span { color:#8b857c; font-size:10px; margin-bottom:8px; }
+.export-item .import-btn { cursor:pointer; }
+.preview-bar-actions { display:flex; align-items:center; gap:7px; }
+.preview-share-btn { border:1px solid #555 !important; background:#252525 !important; color:#eee !important; border-radius:6px; padding:6px 9px !important; font-size:9px !important; letter-spacing:0 !important; }
+.preview-share-btn:disabled { opacity:.5; }
+@media (max-width: 720px) {
+  .mobile-nav-main { grid-template-columns:repeat(5,minmax(0,1fr)); }
+  .mobile-nav-main button { font-size:9px; }
+  .export-grid { grid-template-columns:1fr; padding:12px; }
+}
