@@ -152,7 +152,9 @@ function AuthBox({ user, onUserChange, onRefresh }) {
       // Provider 활성화 여부는 Supabase 프로젝트의 Auth 설정에서 결정된다.
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
-        options: { redirectTo: getAuthRedirectUrl() },
+        options: {
+          redirectTo: 'https://dangdanggo15-pixel.github.io/scenario-editor/'
+        }
       });
       if (error) throw error;
     } catch (error) {
