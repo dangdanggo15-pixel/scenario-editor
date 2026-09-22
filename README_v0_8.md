@@ -10,3 +10,9 @@
 
 ## Important
 Keep your existing `public/supabase-config.js` with your own Supabase Project URL and Publishable Key. Do not put a Supabase secret/service_role key in the browser config.
+
+
+## v0.9 changes
+- Restored add-choice controls in the script editor: footer button and per-dialogue insertion button.
+- Google login now uses Supabase's standard signInWithOAuth browser flow. Provider enablement remains a Supabase Dashboard setting.
+- Existing v0.8 features and dialogue `...` → `···` normalization are preserved.

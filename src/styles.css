@@ -360,3 +360,9 @@ kbd { display:inline-block; border:1px solid #d7d3cb; background:#f8f6f2; border
   .mobile-nav-main button { font-size:9px; }
   .export-grid { grid-template-columns:1fr; padding:12px; }
 }
+
+/* v0.9 choice insertion controls */
+.insert-choice-btn { opacity: 0; border: 1px dashed #cfcac0; background:#fcfbf8; color:#6c685f; border-radius:6px; padding:3px 6px; font-size:9px; }
+.script-row:hover .insert-choice-btn, .script-row:focus-within .insert-choice-btn { opacity:1; }
+.insert-choice-btn:hover { background:#f7f4ee; }
+@media (max-width: 760px) { .insert-choice-btn { opacity:1; } }
