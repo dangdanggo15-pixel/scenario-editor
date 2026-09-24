@@ -218,10 +218,10 @@ function App() {
   const updateBackground=(id,patch)=>updateProject(p=>({...p,backgrounds:p.backgrounds.map(b=>b.id===id?{...b,...patch}:b)}));
   const deleteBackground=id=>updateProject(p=>({...p,backgrounds:p.backgrounds.filter(b=>b.id!==id),scenes:p.scenes.map(s=>({...s,blocks:s.blocks.map(b=>b.type==='background'&&b.backgroundId===id?{...b,backgroundId:null}:b)})),endings:p.endings.map(e=>({...e,blocks:e.blocks.map(b=>b.type==='background'&&b.backgroundId===id?{...b,backgroundId:null}:b)}))}));
   const addMap=()=>{const m={id:uid('map'),name:`맵 ${String((project.maps||[]).length+1).padStart(2,'0')}`,locations:[]};updateProject(p=>({...p,maps:[...(p.maps||[]),m]}));setSelectedMapId(m.id);setSelectedLocationId(null);setSelectedTab('maps')};
-  const updateMap=(id,updater)=>updateProject(p=>({...p,maps:(p.maps||[]).map(m=>m.id===id?(typeof updater==='function'?updater(m):updater):m)}));
+  const updateMap=(id,updater)=>updateProject(p=>({...p,maps:(p.maps||[]).map(m=>{if(m.id!==id)return m;const next=typeof updater==='function'?updater(m):updater;return next&&typeof next==='object'?{...m,...next}:m})}));
   const deleteMap=id=>updateProject(p=>({...p,maps:(p.maps||[]).filter(m=>m.id!==id),scenes:p.scenes.map(s=>({...s,blocks:s.blocks.map(b=>b.type==='map'&&b.mapId===id?{...b,mapId:null}:b)}))}));
   const addLocation=(mapId)=>{const l={id:uid('loc'),name:`장소 ${String(((project.maps||[]).find(m=>m.id===mapId)?.locations||[]).length+1).padStart(2,'0')}`,visited:false,blocks:[{id:uid('line'),type:'dialogue',speakerId:project.characters[0]?.id||null,illustrationNum:null,position:'none',bounce:false,text:''}]};updateMap(mapId,m=>({...m,locations:[...(m.locations||[]),l]}));setSelectedMapId(mapId);setSelectedLocationId(l.id)};
-  const updateMapLocation=(mapId,locationId,updater)=>updateMap(mapId,m=>({...m,locations:(m.locations||[]).map(l=>l.id===locationId?(typeof updater==='function'?updater(l):updater):l)}));
+  const updateMapLocation=(mapId,locationId,updater)=>updateMap(mapId,m=>({...m,locations:(m.locations||[]).map(l=>{if(l.id!==locationId)return l;const next=typeof updater==='function'?updater(l):updater;return next&&typeof next==='object'?{...l,...next}:l})}));
   const deleteLocation=(mapId,locationId)=>updateMap(mapId,m=>({...m,locations:(m.locations||[]).filter(l=>l.id!==locationId)}));
   const addMapBarAfter=(sceneId,index)=>updateScene(sceneId,s=>{const blocks=[...s.blocks];blocks.splice(index+1,0,{id:uid('mapbar'),type:'map',mapId:project.maps?.[0]?.id||null});return {...s,blocks}});
   const addIllustration=async(characterId,file,editId=null,patch=null)=>{if(editId&&patch){updateProject(p=>({...p,characters:p.characters.map(c=>c.id===characterId?{...c,illustrations:c.illustrations.map(i=>i.id===editId?{...i,...patch}:i)}:c)}));return}const img=await resizeImage(file,1100),c=project.characters.find(x=>x.id===characterId),nextNum=(c?.illustrations||[]).reduce((m,x)=>Math.max(m,Number(x.num)||0),0)+1;updateProject(p=>({...p,characters:p.characters.map(ch=>ch.id===characterId?{...ch,illustrations:[...ch.illustrations,{id:uid('img'),num:nextNum,dataUrl:img,label:''}]}:ch)}))};
@@ -312,27 +312,84 @@ function ExportPanel({project}) { return <section className="editor-card export-
 
 function replaceUserTokens(value, playerName) {
   const name = String(playerName ?? '').trim();
-  if (!name) return String(value ?? '');
-  return String(value ?? '').replace(/(?:\{\s*user\s*\}|｛\s*user\s*｝)/gi, name);
+  const text = String(value ?? '');
+  if (!name) return text;
+  // Normalize full-width braces first, then replace the token itself.
+  // Punctuation immediately after the token (e.g. {user}. / {user},) is intentionally left untouched.
+  return text.replace(/[｛{]\s*user\s*[｝}]/giu, name);
 }
 
 function TypewriterText({text,speed=28}) { const[shown,setShown]=useState('');useEffect(()=>{const source=String(text||' ');setShown('');let i=0;const timer=setInterval(()=>{i++;setShown(source.slice(0,i));if(i>=source.length)clearInterval(timer)},speed);return()=>clearInterval(timer)},[text,speed]);return <span>{shown}</span> }
 function getBackgroundAt(blocks,index,project) { let bg=null; for(let i=0;i<=index;i++){const b=blocks[i];if(b?.type==='background')bg=project.backgrounds.find(x=>x.id===b.backgroundId)||null} return bg; }
 function nextContentIndex(blocks,index){let i=index;while(i<blocks.length&&blocks[i]?.type==='background')i++;return i}
 function MapPreview({map,project,playerName='',illustrationFor,onComplete}) {
-  const [completed,setCompleted]=useState(()=>new Set()); const [locationId,setLocationId]=useState(null); const [index,setIndex]=useState(0);
-  const loc=map?.locations?.find(l=>l.id===locationId); const rawIndex=loc?Math.min(index,(loc.blocks||[]).length):0; const contentIndex=loc?nextContentIndex(loc.blocks||[],rawIndex):0; const block=loc?.blocks?.[contentIndex]; const bg=loc?getBackgroundAt(loc.blocks,contentIndex,project):null;
-  const finish=()=>{if(!loc)return;setCompleted(prev=>{const next=new Set(prev);next.add(loc.id);return next});setLocationId(null);setIndex(0)};
-  const chooseNext=()=>{if(!loc)return;const ni=nextContentIndex(loc.blocks,contentIndex+1);if(ni<loc.blocks.length)setIndex(ni);else finish()};
-  if(loc&&block){
-    if(block.type==='dialogue'){const img=block.speakerId&&block.position!=='none'?illustrationFor(block.speakerId,block.illustrationNum):null;return <div className="map-location-preview"><div className="map-location-head"><b>{loc.name}</b><button onClick={()=>{setLocationId(null);setIndex(0)}}>맵으로</button></div><div className="shared-stage" style={bg?.dataUrl?{backgroundImage:`url(${bg.dataUrl})`,backgroundSize:'cover',backgroundPosition:'center'}:undefined}>{img&&<img className={`preview-character-img ${block.position} ${block.bounce?'bounce':''}`} src={img} alt=""/>}<div className="dialogue-box"><div className="preview-speaker">{replaceUserTokens(project.characters.find(c=>c.id===block.speakerId)?.name||'',playerName)}</div><div className="preview-text"><TypewriterText key={`${block.id}-${playerName}`} text={replaceUserTokens(block.text||' ',playerName)}/></div><button className="next-arrow" onClick={chooseNext}>›</button></div></div></div>}
-    if(block.type==='choice')return <div className="map-location-preview"><div className="map-location-head"><b>{loc.name}</b><button onClick={()=>{setLocationId(null);setIndex(0)}}>맵으로</button></div><div className="choice-preview"><div className="choice-preview-prompt">{block.prompt||'선택하세요.'}</div>{(block.options||[]).map(o=><button className="preview-choice" key={o.id} onClick={chooseNext}>{o.text||'선택지'}</button>)}</div></div>;
-    setIndex(contentIndex+1); return null;
-  }
-  const allDone=(map?.locations||[]).length>0&&completed.size===(map?.locations||[]).length;
-  return <div className="map-preview"><h2>{map?.name||'맵'}</h2><p>장소를 선택해 이벤트를 확인하세요. ({completed.size}/{map?.locations?.length||0})</p><div className="map-preview-list">{(map?.locations||[]).map(l=><button key={l.id} disabled={completed.has(l.id)} onClick={()=>{setLocationId(l.id);setIndex(0)}}>{l.name}{completed.has(l.id)?' ✓':''}</button>)}</div>{allDone&&<button className="dark-btn" onClick={onComplete}>다음으로</button>}</div>;
-}
+  const [completed,setCompleted]=useState(()=>new Set());
+  const [locationId,setLocationId]=useState(null);
+  const [index,setIndex]=useState(0);
+  const loc=map?.locations?.find(l=>l.id===locationId)||null;
+  const blocks=loc?.blocks||[];
+  const contentIndex=loc?nextContentIndex(blocks,Math.min(index,blocks.length)):0;
+  const block=loc?.blocks?.[contentIndex]||null;
+  const bg=loc?getBackgroundAt(blocks,contentIndex,project):null;
 
+  const leaveLocation=()=>{setLocationId(null);setIndex(0)};
+  const finishLocation=()=>{
+    if(!loc)return;
+    setCompleted(prev=>{const next=new Set(prev);next.add(loc.id);return next});
+    leaveLocation();
+  };
+  const nextBlock=()=>{
+    if(!loc)return;
+    const ni=nextContentIndex(blocks,contentIndex+1);
+    if(ni<blocks.length)setIndex(ni); else finishLocation();
+  };
+
+  // Only skip unsupported block types after render; never call setState during render.
+  useEffect(()=>{
+    if(!loc||!block)return;
+    if(block.type!=='dialogue'&&block.type!=='choice'){
+      const ni=nextContentIndex(blocks,contentIndex+1);
+      if(ni<blocks.length)setIndex(ni); else finishLocation();
+    }
+  },[loc?.id,block?.id,contentIndex]);
+
+  if(!map) return <div className="map-preview map-preview-empty"><h2>맵을 찾을 수 없어.</h2></div>;
+
+  if(loc&&block?.type==='dialogue'){
+    const img=block.speakerId&&block.position!=='none'?illustrationFor(block.speakerId,block.illustrationNum):null;
+    return <div className="map-location-preview">
+      <div className="map-location-head"><b>{loc.name}</b><button onClick={leaveLocation}>맵으로</button></div>
+      <div className="shared-stage" style={bg?.dataUrl?{backgroundImage:`url(${bg.dataUrl})`,backgroundSize:'cover',backgroundPosition:'center'}:undefined}>
+        {img&&<img key={`${block.id}-${block.bounce?'b':''}`} className={`preview-character-img ${block.position} ${block.bounce?'bounce':''}`} src={img} alt=""/>}
+        <div className="dialogue-box">
+          <div className="preview-speaker">{replaceUserTokens(project.characters.find(c=>c.id===block.speakerId)?.name||'',playerName)}</div>
+          <div className="preview-text"><TypewriterText key={`${block.id}-${playerName}`} text={replaceUserTokens(block.text||' ',playerName)}/></div>
+          <button className="next-arrow" onClick={nextBlock}>›</button>
+        </div>
+      </div>
+    </div>;
+  }
+
+  if(loc&&block?.type==='choice'){
+    return <div className="map-location-preview map-location-choice">
+      <div className="map-location-head"><b>{loc.name}</b><button onClick={leaveLocation}>맵으로</button></div>
+      <div className="choice-preview">
+        <div className="choice-preview-prompt">{replaceUserTokens(block.prompt||'선택하세요.',playerName)}</div>
+        {(block.options||[]).map(o=><button className="preview-choice" key={o.id} onClick={nextBlock}>{replaceUserTokens(o.text||'선택지',playerName)}</button>)}
+      </div>
+    </div>;
+  }
+
+  const allDone=(map.locations||[]).length>0&&completed.size===(map.locations||[]).length;
+  return <div className="map-preview">
+    <div className="map-preview-inner">
+      <h2>{map.name||'맵'}</h2>
+      <p>장소를 선택해 이벤트를 확인하세요. ({completed.size}/{map.locations?.length||0})</p>
+      <div className="map-preview-list">{(map.locations||[]).map(l=><button key={l.id} disabled={completed.has(l.id)} onClick={()=>{setLocationId(l.id);setIndex(0)}}>{l.name}{completed.has(l.id)?' ✓':''}</button>)}</div>
+      {allDone&&<button className="dark-btn" onClick={onComplete}>다음으로</button>}
+    </div>
+  </div>;
+}
 
 function PreviewOverlay({project,previewSceneId,previewBlockIndex,setPreviewBlockIndex,previewEndingId,setPreviewSceneId,setPreviewEndingId,previewReaction,setPreviewReaction,goPreviewNext,previewScene,previewBlock,selectPreviewOption,illustrationFor,close,createShare,shareBusy,shareUrl,setShareUrl}) {
   const [playerName,setPlayerName]=useState('');
