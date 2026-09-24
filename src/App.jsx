@@ -2,45 +2,47 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import JSZip from 'jszip';
 import { supabase, supabaseEnabled } from './lib_supabase';
 
-const PROJECTS_KEY = 'scenario-editor-projects-v05';
-const LAST_PROJECT_KEY = 'scenario-editor-last-project-v05';
+const PROJECTS_KEY = 'scenario-editor-projects-v10';
+const LAST_PROJECT_KEY = 'scenario-editor-last-project-v10';
 const AUTOSAVE_MS = 5 * 60 * 1000;
+const APP_BASE_PATH = '/scenario-editor/';
 
 const uid = (prefix = 'id') => `${prefix}_${Math.random().toString(36).slice(2, 9)}${Date.now().toString(36).slice(-5)}`;
-
 const normalizeDialogueText = value => String(value ?? '').replace(/\.{3}/g, '···');
+const safeName = name => String(name || 'scenario').replace(/[\\/:*?"<>|]/g, '_').trim() || 'scenario';
+const escapeInk = (text = '') => String(text).replace(/\\/g, '\\\\');
+const appBaseUrl = () => typeof window === 'undefined' ? '' : new URL(APP_BASE_PATH, window.location.origin).href;
 
 function starterProject(name = '새 프로젝트') {
-  const sus = uid('char');
-  const min = uid('char');
-  const s1 = uid('scene');
-  const s2 = uid('scene');
-  const e1 = uid('ending');
+  const sus = uid('char'), min = uid('char');
+  const s1 = uid('scene'), s2 = uid('scene'), e1 = uid('ending'), ch1 = uid('chapter');
   return {
     id: uid('project'), name,
     characters: [
       { id: sus, name: '수연', illustrations: [] },
       { id: min, name: '민지', illustrations: [] },
     ],
+    backgrounds: [],
+    chapters: [{ id: ch1, name: 'Chapter 01', collapsed: false, sceneIds: [s1, s2] }],
     scenes: [
-      { id: s1, name: 'Scene 01', blocks: [
-        { id: uid('line'), type: 'dialogue', speakerId: sus, illustrationNum: null, position: 'none', text: '오늘은 어디로 갈까?' },
-        { id: uid('line'), type: 'dialogue', speakerId: min, illustrationNum: null, position: 'none', text: '나는 카페에 가고 싶어.' },
+      { id: s1, name: 'Scene 01', chapterId: ch1, blocks: [
+        { id: uid('line'), type: 'dialogue', speakerId: sus, illustrationNum: null, position: 'none', bounce: false, text: '오늘은 어디로 갈까?' },
+        { id: uid('line'), type: 'dialogue', speakerId: min, illustrationNum: null, position: 'none', bounce: false, text: '나는 카페에 가고 싶어.' },
         { id: uid('choice'), type: 'choice', prompt: '어디로 갈까?', reactive: false, reactiveTargetId: '', options: [
           { id: uid('opt'), text: '카페에 간다', targetId: s2, responseSpeakerId: null, responseText: '' },
           { id: uid('opt'), text: '집에 간다', targetId: s1, responseSpeakerId: null, responseText: '' },
           { id: uid('opt'), text: '민지를 따라간다', targetId: e1, responseSpeakerId: null, responseText: '' },
         ] },
       ] },
-      { id: s2, name: 'Scene 02', blocks: [
-        { id: uid('line'), type: 'dialogue', speakerId: sus, illustrationNum: null, position: 'none', text: '좋아. 카페로 가자.' },
-        { id: uid('line'), type: 'dialogue', speakerId: min, illustrationNum: null, position: 'none', text: '응, 잠깐만.' },
-        { id: uid('line'), type: 'dialogue', speakerId: null, illustrationNum: null, position: 'none', text: '두 사람은 천천히 카페 쪽으로 걸어갔다.' },
+      { id: s2, name: 'Scene 02', chapterId: ch1, blocks: [
+        { id: uid('line'), type: 'dialogue', speakerId: sus, illustrationNum: null, position: 'none', bounce: false, text: '좋아. 카페로 가자.' },
+        { id: uid('line'), type: 'dialogue', speakerId: min, illustrationNum: null, position: 'none', bounce: false, text: '응, 잠깐만.' },
+        { id: uid('line'), type: 'dialogue', speakerId: null, illustrationNum: null, position: 'none', bounce: false, text: '두 사람은 천천히 카페 쪽으로 걸어갔다.' },
       ] },
     ],
     endings: [{ id: e1, name: 'BAD END 01', blocks: [
-      { id: uid('line'), type: 'dialogue', speakerId: min, illustrationNum: null, position: 'none', text: '민지를 따라간 결과, 예상하지 못했던 일이 벌어졌다.' },
-      { id: uid('line'), type: 'dialogue', speakerId: null, illustrationNum: null, position: 'none', text: '' },
+      { id: uid('line'), type: 'dialogue', speakerId: min, illustrationNum: null, position: 'none', bounce: false, text: '민지를 따라간 결과, 예상하지 못했던 일이 벌어졌다.' },
+      { id: uid('line'), type: 'dialogue', speakerId: null, illustrationNum: null, position: 'none', bounce: false, text: '' },
     ] }],
   };
 }
@@ -48,19 +50,28 @@ function starterProject(name = '새 프로젝트') {
 function normalizeProject(raw) {
   const fallback = starterProject();
   if (!raw || typeof raw !== 'object') return fallback;
-  const characters = Array.isArray(raw.characters) ? raw.characters.map(c => ({
-    ...c, illustrations: Array.isArray(c.illustrations) ? c.illustrations : [],
-  })) : [];
-  const normalizeBlocks = blocks => (Array.isArray(blocks) ? blocks : []).map(b => b.type === 'dialogue' ? ({
-    ...b, illustrationNum: b.illustrationNum ?? null, position: b.position || 'none', speakerId: b.speakerId || null, text: b.text || '',
-  }) : b);
+  const characters = Array.isArray(raw.characters) ? raw.characters.map(c => ({ ...c, illustrations: Array.isArray(c.illustrations) ? c.illustrations : [] })) : [];
+  const backgrounds = Array.isArray(raw.backgrounds) ? raw.backgrounds.map(b => ({ id: b.id || uid('bg'), name: b.name || '배경', dataUrl: b.dataUrl || '' })) : [];
+  const normalizeBlocks = blocks => (Array.isArray(blocks) ? blocks : []).map(b => {
+    if (b.type === 'dialogue') return { ...b, illustrationNum: b.illustrationNum ?? null, position: b.position || 'none', bounce: Boolean(b.bounce), speakerId: b.speakerId || null, text: b.text || '' };
+    if (b.type === 'background') return { ...b, backgroundId: b.backgroundId || null };
+    return b;
+  });
+  const scenes = Array.isArray(raw.scenes) ? raw.scenes.map(s => ({ ...s, chapterId: s.chapterId || null, blocks: normalizeBlocks(s.blocks) })) : [];
+  let chapters = Array.isArray(raw.chapters) ? raw.chapters.map(c => ({ id: c.id || uid('chapter'), name: c.name || 'Chapter', collapsed: Boolean(c.collapsed), sceneIds: Array.isArray(c.sceneIds) ? c.sceneIds : [] })) : [];
+  if (!chapters.length) chapters = [{ id: uid('chapter'), name: 'Chapter 01', collapsed: false, sceneIds: [] }];
+  const validSceneIds = new Set(scenes.map(s => s.id));
+  chapters = chapters.map(c => ({ ...c, sceneIds: c.sceneIds.filter(id => validSceneIds.has(id)) }));
+  const assigned = new Set(chapters.flatMap(c => c.sceneIds));
+  scenes.forEach((s, i) => {
+    if (!assigned.has(s.id)) {
+      const target = chapters.find(c => c.id === s.chapterId) || chapters[0];
+      target.sceneIds.push(s.id); s.chapterId = target.id;
+    }
+  });
   return {
-    ...fallback, ...raw,
-    id: raw.id || fallback.id, name: raw.name || '새 프로젝트', characters,
-    scenes: Array.isArray(raw.scenes) ? raw.scenes.map(s => ({ ...s, blocks: normalizeBlocks(s.blocks) })) : [],
-    endings: Array.isArray(raw.endings) ? raw.endings.map(e => ({
-      ...e, blocks: normalizeBlocks(e.blocks || [{ id: uid('line'), type: 'dialogue', speakerId: null, text: e.body || '' }]),
-    })) : [],
+    ...fallback, ...raw, id: raw.id || fallback.id, name: raw.name || '새 프로젝트', characters, backgrounds, chapters,
+    scenes, endings: Array.isArray(raw.endings) ? raw.endings.map(e => ({ ...e, blocks: normalizeBlocks(e.blocks || [{ id: uid('line'), type: 'dialogue', speakerId: null, text: e.body || '' }]) })) : [],
   };
 }
 
@@ -70,306 +81,194 @@ function loadLocalProjects() {
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) return Object.fromEntries(Object.entries(raw).map(([id, p]) => [id, normalizeProject(p)]));
     if (Array.isArray(raw)) return Object.fromEntries(raw.map(p => [p.id, normalizeProject(p)]));
   } catch {}
-  const first = starterProject();
-  return { [first.id]: first };
+  const first = starterProject(); return { [first.id]: first };
 }
-
 function saveLocalProjects(projects) { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects)); }
-function downloadBlob(blob, filename) { const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); }
+function downloadBlob(blob, filename) { const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
 function downloadText(text, filename, type = 'text/plain;charset=utf-8') { downloadBlob(new Blob([text], { type }), filename); }
 function sceneKey(id) { return `SCENE_${String(id).replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}`; }
 function endingKey(id) { return `ENDING_${String(id).replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}`; }
-function safeName(name) { return String(name || 'scenario').replace(/[\\/:*?"<>|]/g, '_').trim() || 'scenario'; }
-function escapeInk(text = '') { return String(text).replace(/\\/g, '\\\\'); }
 
+function dialogueCount(project) {
+  return [...project.scenes, ...project.endings].reduce((n, item) => n + (item.blocks || []).filter(b => b.type === 'dialogue' && String(b.text || '').trim()).length, 0);
+}
+function playTimeText(project) {
+  const sec = dialogueCount(project) * 3;
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return h ? `${h}시간 ${m}분 ${s}초` : `${m}분 ${s}초`;
+}
+function makeTxt(project) {
+  const out = [`[${project.name}]`, ''];
+  const addItem = (label, item) => {
+    out.push(`===== ${label} =====`);
+    let bg = null;
+    for (const b of item.blocks || []) {
+      if (b.type === 'background') { bg = project.backgrounds.find(x => x.id === b.backgroundId); out.push(`[배경: ${bg?.name || '없음'}]`); continue; }
+      if (b.type === 'dialogue') { const c = project.characters.find(x => x.id === b.speakerId); out.push(`${c?.name ? `${c.name}: ` : ''}${b.text || ''}`); }
+      if (b.type === 'choice') { if (b.prompt) out.push(`【선택】 ${b.prompt}`); (b.options || []).forEach((o, i) => out.push(`  ${i + 1}. ${o.text || ''}`)); }
+    }
+    out.push('');
+  };
+  project.scenes.forEach(s => addItem(s.name, s)); project.endings.forEach(e => addItem(e.name, e));
+  return out.join('\n');
+}
+function makeExcelHtml(project) {
+  const rows = [['프로젝트', project.name], ['총 대사', dialogueCount(project)], ['예상 플레이 타임', playTimeText(project)], [], ['구분', '장면', '캐릭터', '대사', '배경', '선택지']];
+  const add = (kind, item) => (item.blocks || []).forEach(b => {
+    if (b.type === 'dialogue') { const c = project.characters.find(x => x.id === b.speakerId); rows.push([kind, item.name, c?.name || '', b.text || '', '', '']); }
+    if (b.type === 'background') { const bg = project.backgrounds.find(x => x.id === b.backgroundId); rows.push([kind, item.name, '', '', bg?.name || '', '']); }
+    if (b.type === 'choice') (b.options || []).forEach((o, i) => rows.push([kind, item.name, '', '', '', `${i + 1}. ${o.text || ''}`]));
+  });
+  project.scenes.forEach(s => add('씬', s)); project.endings.forEach(e => add('엔딩', e));
+  const esc = v => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return `<html><head><meta charset="utf-8"></head><body><table border="1">${rows.map(r => `<tr>${r.map(v => `<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</table></body></html>`;
+}
 function makeInk(project) {
   const lines = ['// Generated by Scenario Editor', `// Project: ${project.name}`, '', `-> ${project.scenes[0] ? sceneKey(project.scenes[0].id) : 'END'}`, ''];
   for (const scene of project.scenes) {
     lines.push(`=== ${sceneKey(scene.id)} ===`);
     for (const block of scene.blocks) {
-      if (block.type === 'dialogue') {
-        const speaker = project.characters.find(c => c.id === block.speakerId);
-        lines.push(`~ speaker = "${escapeInk(speaker?.name || '')}"`);
-        lines.push(`~ illustration_num = ${block.illustrationNum || 0}`);
-        lines.push(`~ position = "${block.position || 'none'}"`);
-        if (block.text?.trim()) lines.push(escapeInk(block.text));
-      } else if (block.type === 'choice') {
-        if (block.prompt?.trim()) lines.push(`// CHOICE: ${escapeInk(block.prompt)}`);
-        for (const option of block.options || []) {
-          lines.push(`* ${escapeInk(option.text || '선택지')}`);
-          if (block.reactive && option.responseText?.trim()) {
-            const responseSpeaker = project.characters.find(c => c.id === option.responseSpeakerId);
-            lines.push(`    ~ speaker = "${escapeInk(responseSpeaker?.name || '')}"`);
-            lines.push(`    ${escapeInk(option.responseText)}`);
-          }
-          const targetId = block.reactive ? block.reactiveTargetId : option.targetId;
-          const target = project.scenes.find(s => s.id === targetId); const ending = project.endings.find(e => e.id === targetId);
-          lines.push(`    -> ${target ? sceneKey(target.id) : ending ? endingKey(ending.id) : sceneKey(scene.id)}`);
-        }
-      }
+      if (block.type === 'background') { const bg = project.backgrounds.find(x => x.id === block.backgroundId); lines.push(`// BACKGROUND: ${escapeInk(bg?.name || '')}`); continue; }
+      if (block.type === 'dialogue') { const speaker = project.characters.find(c => c.id === block.speakerId); lines.push(`~ speaker = "${escapeInk(speaker?.name || '')}"`); lines.push(`~ illustration_num = ${block.illustrationNum || 0}`); lines.push(`~ position = "${block.position || 'none'}"`); lines.push(`~ bounce = ${Boolean(block.bounce)}`); if (block.text?.trim()) lines.push(escapeInk(block.text)); }
+      else if (block.type === 'choice') { if (block.prompt?.trim()) lines.push(`// CHOICE: ${escapeInk(block.prompt)}`); for (const option of block.options || []) { lines.push(`* ${escapeInk(option.text || '선택지')}`); if (block.reactive && option.responseText?.trim()) { const rs = project.characters.find(c => c.id === option.responseSpeakerId); lines.push(`    ~ speaker = "${escapeInk(rs?.name || '')}"`); lines.push(`    ${escapeInk(option.responseText)}`); } const targetId = block.reactive ? block.reactiveTargetId : option.targetId; const target = project.scenes.find(s => s.id === targetId); const ending = project.endings.find(e => e.id === targetId); lines.push(`    -> ${target ? sceneKey(target.id) : ending ? endingKey(ending.id) : sceneKey(scene.id)}`); } }
     }
     lines.push('-> END', '');
   }
-  for (const ending of project.endings) {
-    lines.push(`=== ${endingKey(ending.id)} ===`);
-    for (const block of ending.blocks || []) if (block.type === 'dialogue') {
-      const speaker = project.characters.find(c => c.id === block.speakerId);
-      lines.push(`~ speaker = "${escapeInk(speaker?.name || '')}"`);
-      lines.push(`~ illustration_num = ${block.illustrationNum || 0}`);
-      lines.push(`~ position = "${block.position || 'none'}"`);
-      if (block.text?.trim()) lines.push(escapeInk(block.text));
-    }
-    lines.push('-> END', '');
-  }
+  for (const ending of project.endings) { lines.push(`=== ${endingKey(ending.id)} ===`); for (const block of ending.blocks || []) { if (block.type === 'background') { const bg = project.backgrounds.find(x => x.id === block.backgroundId); lines.push(`// BACKGROUND: ${escapeInk(bg?.name || '')}`); continue; } if (block.type === 'dialogue') { const speaker = project.characters.find(c => c.id === block.speakerId); lines.push(`~ speaker = "${escapeInk(speaker?.name || '')}"`); lines.push(`~ illustration_num = ${block.illustrationNum || 0}`); lines.push(`~ position = "${block.position || 'none'}"`); lines.push(`~ bounce = ${Boolean(block.bounce)}`); if (block.text?.trim()) lines.push(escapeInk(block.text)); } } lines.push('-> END', ''); }
   return lines.join('\n');
 }
-function makeJson(project) { return JSON.stringify({ format: 'scenario-editor-v1', exportedAt: new Date().toISOString(), project }, null, 2); }
-function makeCharactersJson(project) { return JSON.stringify(project.characters, null, 2); }
-async function exportUnity(project) {
-  const zip = new JSZip(); zip.file('scenario.ink', makeInk(project)); zip.file('scenario.json', makeJson(project)); zip.file('characters.json', makeCharactersJson(project));
-  zip.file('README_Unity.txt', `Scenario Editor export\n\nscenario.ink is the story source.\nscenario.json is the editor backup.\ncharacters.json includes illustration metadata.\n\nGenerated from: ${project.name}\n`);
-  downloadBlob(await zip.generateAsync({ type: 'blob' }), `${safeName(project.name)}_UnityExport.zip`);
-}
-function getAuthRedirectUrl() { return typeof window === 'undefined' ? undefined : `${window.location.origin}${import.meta.env.BASE_URL}`; }
+function makeJson(project) { return JSON.stringify({ format: 'scenario-editor-v1.0', exportedAt: new Date().toISOString(), project }, null, 2); }
+async function exportUnity(project) { const zip = new JSZip(); zip.file('scenario.ink', makeInk(project)); zip.file('scenario.json', makeJson(project)); zip.file('characters.json', JSON.stringify(project.characters, null, 2)); zip.file('backgrounds.json', JSON.stringify(project.backgrounds, null, 2)); zip.file('README_Unity.txt', `Scenario Editor export\n\nProject: ${project.name}\n`); downloadBlob(await zip.generateAsync({ type: 'blob' }), `${safeName(project.name)}_UnityExport.zip`); }
+function getAuthRedirectUrl() { return appBaseUrl(); }
 
 function AuthBox({ user, onUserChange, onRefresh }) {
-  const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [busy, setBusy] = useState(false); const [message, setMessage] = useState('');
-  const signIn = async mode => {
-    if (!supabaseEnabled) return setMessage('Supabase 연결 설정이 필요해. public/supabase-config.js의 URL과 Publishable Key를 확인해줘.'); if (!email.trim() || !password) return setMessage('이메일과 비밀번호를 입력해줘.');
-    setBusy(true); setMessage('');
-    try {
-      const result = mode === 'signup' ? await supabase.auth.signUp({ email: email.trim(), password, options: { emailRedirectTo: getAuthRedirectUrl() } }) : await supabase.auth.signInWithPassword({ email: email.trim(), password });
-      if (result.error) throw result.error;
-      setMessage(mode === 'signup' && !result.data?.session ? '가입 완료! 이메일 확인 후 로그인해줘.' : '로그인 완료!'); if (result.data?.session) await onRefresh();
-    } catch (error) { setMessage(error.message || '인증 오류가 발생했어.'); } finally { setBusy(false); }
-  };
+  const [email, setEmail] = useState(''), [password, setPassword] = useState(''), [busy, setBusy] = useState(false), [message, setMessage] = useState('');
+  const signIn = async mode => { if (!supabaseEnabled) return setMessage('Supabase 연결 설정이 필요해. public/supabase-config.js의 URL과 Publishable Key를 확인해줘.'); if (!email.trim() || !password) return setMessage('이메일과 비밀번호를 입력해줘.'); setBusy(true); setMessage(''); try { const result = mode === 'signup' ? await supabase.auth.signUp({ email: email.trim(), password, options: { emailRedirectTo: getAuthRedirectUrl() } }) : await supabase.auth.signInWithPassword({ email: email.trim(), password }); if (result.error) throw result.error; setMessage(mode === 'signup' && !result.data?.session ? '가입 완료! 이메일 확인 후 로그인해줘.' : '로그인 완료!'); if (result.data?.session) await onRefresh(); } catch (error) { setMessage(error.message || '인증 오류가 발생했어.'); } finally { setBusy(false); } };
   const signOut = async () => { await supabase.auth.signOut(); onUserChange(null); onRefresh(); };
-  const google = async () => {
-    if (!supabaseEnabled) { setMessage('Supabase 연결 설정이 필요해. public/supabase-config.js의 URL과 Publishable Key를 확인해줘.'); return; }
-    setBusy(true); setMessage('Google 로그인으로 이동 중…');
-    try {
-      // Supabase 공식 브라우저 OAuth 흐름을 그대로 사용한다.
-      // Provider 활성화 여부는 Supabase 프로젝트의 Auth 설정에서 결정된다.
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: 'https://dangdanggo15-pixel.github.io/scenario-editor/'
-        }
-      });
-      if (error) throw error;
-    } catch (error) {
-      const msg = String(error?.message || '');
-      if (msg.toLowerCase().includes('provider is not enabled') || msg.toLowerCase().includes('unsupported provider')) {
-        setMessage('Supabase에서 Google Provider가 활성화되지 않았어. Supabase Dashboard → Authentication → Providers → Google에서 Enable을 켜고 저장해줘.');
-      } else {
-        setMessage(msg || 'Google 로그인에 실패했어.');
-      }
-      setBusy(false);
-    }
-  };
+  const google = async () => { if (!supabaseEnabled) return setMessage('Supabase 연결 설정이 필요해. public/supabase-config.js의 URL과 Publishable Key를 확인해줘.'); setBusy(true); setMessage('Google 로그인으로 이동 중…'); try { const { error } = await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: getAuthRedirectUrl() } }); if (error) throw error; } catch (error) { setMessage(error.message || 'Google 로그인에 실패했어.'); setBusy(false); } };
   if (user) return <div className="cloud-card"><div className="tiny-label">CLOUD SYNC</div><strong>{user.email}</strong><p>저장 버튼 또는 5분 자동저장으로 클라우드에 보관돼.</p><button className="ghost-btn full" onClick={signOut}>로그아웃</button></div>;
-  return <div className="cloud-card"><div className="tiny-label">CLOUD SYNC</div><strong>PC ↔ 모바일 동기화</strong><p>같은 계정으로 로그인하면 프로젝트를 공유할 수 있어.</p>{!supabaseEnabled&&<div className="auth-config-warning">현재 Supabase 연결이 감지되지 않았어. 아래 로그인 버튼을 사용하려면 <b>public/supabase-config.js</b>에 Project URL과 Publishable Key가 있어야 해.</div>}<input className="auth-input" placeholder="이메일" value={email} onChange={e => setEmail(e.target.value)} /><input className="auth-input" type="password" placeholder="비밀번호 (6자 이상)" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === 'Enter' && signIn('signin')} /><div className="auth-actions"><button className="dark-btn" disabled={busy} onClick={() => signIn('signin')}>로그인</button><button className="ghost-btn" disabled={busy} onClick={() => signIn('signup')}>회원가입</button></div><button className="google-btn" disabled={busy} onClick={google}>G · Google로 계속하기</button>{message && <div className="tiny-message">{message}</div>}</div>;
+  return <div className="cloud-card"><div className="tiny-label">CLOUD SYNC</div><strong>PC ↔ 모바일 동기화</strong><p>같은 계정으로 로그인하면 프로젝트를 공유할 수 있어.</p>{!supabaseEnabled&&<div className="auth-config-warning">현재 Supabase 연결이 감지되지 않았어. <b>public/supabase-config.js</b>에 Project URL과 Publishable Key가 있어야 해.</div>}<input className="auth-input" placeholder="이메일" value={email} onChange={e=>setEmail(e.target.value)}/><input className="auth-input" type="password" placeholder="비밀번호 (6자 이상)" value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==='Enter'&&signIn('signin')}/><div className="auth-actions"><button className="dark-btn" disabled={busy} onClick={()=>signIn('signin')}>로그인</button><button className="ghost-btn" disabled={busy} onClick={()=>signIn('signup')}>회원가입</button></div><button className="google-btn" disabled={busy} onClick={google}>G · Google로 계속하기</button>{message&&<div className="tiny-message">{message}</div>}</div>;
 }
 
 function IllustrationStrip({ character, onAdd, onDelete }) {
-  return <div className="illustration-section">
-    <div className="illustration-section-head"><div><b>일러스트</b><span> · Num.으로 표정/버전을 구분해줘</span></div><label className="small-upload-btn">＋ 일러스트 등록<input type="file" accept="image/*" hidden onChange={e => { const f = e.target.files?.[0]; e.target.value=''; if(f) onAdd(f); }} /></label></div>
-    <div className="illustration-strip">
-      {character.illustrations.map((img, i) => <div className="illustration-card" key={img.id}>
-        <div className="illustration-thumb">{img.dataUrl ? <img src={img.dataUrl} alt={`${character.name} ${img.num || i+1}`} /> : <div className="img-placeholder">NO IMAGE</div>}</div>
-        <div className="illustration-meta"><span>NUM. {img.num}</span><button onClick={() => onDelete(img.id)}>×</button></div>
-        <input className="illustration-note" value={img.label || ''} placeholder="예: 화남 / 웃음" onChange={e => onAdd(null, img.id, { label: e.target.value })} />
-      </div>)}
-      {!character.illustrations.length && <div className="illustration-empty">아직 일러스트가 없어. 캐릭터의 반신 일러스트를 등록해줘.</div>}
-    </div>
-  </div>;
+  return <div className="illustration-section"><div className="illustration-section-head"><div><b>일러스트</b><span> · Num.으로 표정/버전을 구분해줘</span></div><label className="small-upload-btn">＋ 일러스트 등록<input type="file" accept="image/*" hidden onChange={e=>{const f=e.target.files?.[0];e.target.value='';if(f)onAdd(f)}}/></label></div><div className="illustration-strip">{character.illustrations.map((img,i)=><div className="illustration-card" key={img.id}><div className="illustration-thumb">{img.dataUrl?<img src={img.dataUrl} alt={`${character.name} ${img.num||i+1}`}/>:<div className="img-placeholder">NO IMAGE</div>}</div><div className="illustration-meta"><span>NUM. {img.num}</span><button onClick={()=>onDelete(img.id)}>×</button></div><input className="illustration-note" value={img.label||''} placeholder="예: 화남 / 웃음" onChange={e=>onAdd(null,img.id,{label:e.target.value})}/></div>)}{!character.illustrations.length&&<div className="illustration-empty">아직 일러스트가 없어.</div>}</div></div>;
 }
 
 function App() {
-  const [projects, setProjects] = useState(() => loadLocalProjects());
-  const [projectId, setProjectId] = useState(() => localStorage.getItem(LAST_PROJECT_KEY));
-  const [selectedSceneId, setSelectedSceneId] = useState(null);
-  const [selectedTab, setSelectedTab] = useState('script');
-  const [user, setUser] = useState(null); const [status, setStatus] = useState('저장됨'); const [lastSavedAt, setLastSavedAt] = useState(null);
-  const [previewMode, setPreviewMode] = useState(false); const [previewSceneId, setPreviewSceneId] = useState(null); const [previewBlockIndex, setPreviewBlockIndex] = useState(0); const [previewEndingId, setPreviewEndingId] = useState(null); const [previewReaction, setPreviewReaction] = useState(null);
-  const [mobileCloudOpen, setMobileCloudOpen] = useState(false); const [projectMenuOpen, setProjectMenuOpen] = useState(false); const [newChar, setNewChar] = useState(''); const [newScene, setNewScene] = useState(''); const [newEnding, setNewEnding] = useState('');
-  const [shareBusy, setShareBusy] = useState(false); const [shareUrl, setShareUrl] = useState(''); const [remoteProjects, setRemoteProjects] = useState([]); const [authOpen, setAuthOpen] = useState(false);
-  const dialogueRefs = useRef({}); const projectRef = useRef(null); const projectsRef = useRef(projects); const dirtyRef = useRef(false);
-
-  const currentProject = projects[projectId] || Object.values(projects)[0];
-  const project = currentProject || starterProject();
-  const currentScene = useMemo(() => project.scenes.find(s => s.id === selectedSceneId) || project.scenes[0], [project.scenes, selectedSceneId]);
-  const currentEnding = useMemo(() => project.endings.find(e => e.id === selectedSceneId) || project.endings[0], [project.endings, selectedSceneId]);
-  useEffect(() => { projectsRef.current = projects; }, [projects]);
-  useEffect(() => { if (!projectId || !projects[projectId]) { const first = Object.keys(projects)[0]; setProjectId(first); } else localStorage.setItem(LAST_PROJECT_KEY, projectId); }, [projectId, projects]);
-  useEffect(() => { projectRef.current = project; }, [project]);
-  useEffect(() => { if (!selectedSceneId) setSelectedSceneId(project.scenes[0]?.id || project.endings[0]?.id || null); }, [project.id, selectedSceneId, project.scenes, project.endings]);
-
-  const replaceProject = useCallback((next, markDirty=true) => {
-    setProjects(prev => { const all = { ...prev, [next.id]: next }; saveLocalProjects(all); return all; });
-    if (markDirty) { dirtyRef.current = true; setStatus('변경됨 · 저장 필요'); }
-  }, []);
-
-  const saveCloudProject = useCallback(async (p = projectRef.current, silent=false) => {
-    if (!p) return false;
-    if (!user) {
-      if (!silent) alert('로그인을 완료한 이후에 저장할 수 있습니다.');
-      setStatus('로그인 필요');
-      return false;
-    }
-    if (!supabase) {
-      if (!silent) alert('로그인을 완료한 이후에 저장할 수 있습니다.');
-      setStatus('로그인 필요');
-      return false;
-    }
-    if (!silent) setStatus('저장 중…');
-    try {
-      const { error } = await supabase.from('projects').upsert({ id:p.id, user_id:user.id, name:p.name, data:p }, { onConflict:'id' });
-      if (error) throw error;
-      dirtyRef.current = false; setStatus('저장됨'); setLastSavedAt(new Date());
-      if (!silent) alert('저장이 완료되었습니다!');
-      return true;
-    } catch (e) { console.error(e); setStatus('저장 실패 · 로컬에는 보관됨'); if (!silent) alert(`저장에 실패했습니다.\n${e.message || ''}`); return false; }
-  }, [user]);
-
-  const saveAllLocal = useCallback(() => { saveLocalProjects(projectsRef.current); }, []);
-  useEffect(() => { const timer = setInterval(() => { if (dirtyRef.current) saveCloudProject(projectRef.current, false); saveAllLocal(); }, AUTOSAVE_MS); return () => clearInterval(timer); }, [saveCloudProject, saveAllLocal]);
-  useEffect(() => { const fn = () => saveAllLocal(); window.addEventListener('beforeunload', fn); return () => window.removeEventListener('beforeunload', fn); }, [saveAllLocal]);
-
-  const loadCloudProjects = useCallback(async currentUser => {
-    if (!supabase || !currentUser) return;
-    try {
-      const { data, error } = await supabase.from('projects').select('*').eq('user_id', currentUser.id).order('updated_at', { ascending:false });
-      if (error) throw error;
-      const map = {}; (data || []).forEach(row => { if(row.data) map[row.id] = normalizeProject(row.data); });
-      if (!Object.keys(map).length) {
-        const p = projectRef.current; await supabase.from('projects').upsert({id:p.id,user_id:currentUser.id,name:p.name,data:p},{onConflict:'id'}); map[p.id]=p;
-      }
-      setRemoteProjects(data || []); setProjects(map); saveLocalProjects(map); const firstId = localStorage.getItem(LAST_PROJECT_KEY); const id = firstId && map[firstId] ? firstId : Object.keys(map)[0]; setProjectId(id); setStatus('클라우드 프로젝트 불러옴'); dirtyRef.current=false;
-    } catch(e) { console.error(e); setStatus('클라우드 불러오기 실패 · 로컬 사용 중'); }
-  }, []);
-  const refreshAuth = useCallback(async () => { if (!supabase) return; const {data} = await supabase.auth.getUser(); setUser(data?.user || null); if(data?.user) await loadCloudProjects(data.user); }, [loadCloudProjects]);
-  useEffect(() => { if(!supabase) return; const {data:sub}=supabase.auth.onAuthStateChange((_event,session)=>{ setUser(session?.user||null); if(session?.user) setTimeout(()=>loadCloudProjects(session.user),0); }); refreshAuth(); return ()=>sub.subscription.unsubscribe(); }, [refreshAuth,loadCloudProjects]);
-
-  const updateProject = useCallback(updater => { const next = typeof updater === 'function' ? updater(projectRef.current) : updater; replaceProject(next, true); }, [replaceProject]);
-  const updateScene = (sceneId, updater) => updateProject(p => ({...p, scenes:p.scenes.map(s=>s.id===sceneId?(typeof updater==='function'?updater(s):updater):s)}));
-  const updateEnding = (endingId, updater) => updateProject(p => ({...p, endings:p.endings.map(e=>e.id===endingId?(typeof updater==='function'?updater(e):updater):e)}));
-  const updateBlock = (sceneId, blockId, updater) => updateScene(sceneId,s=>({...s,blocks:s.blocks.map(b=>b.id===blockId?(typeof updater==='function'?updater(b):updater):b)}));
-  const deleteBlock = (sceneId,id) => updateScene(sceneId,s=>({...s,blocks:s.blocks.filter(b=>b.id!==id)}));
-  const addDialogueAfter = (sceneId,index,speakerId=null) => { const id=uid('line'); updateScene(sceneId,s=>{const blocks=[...s.blocks];blocks.splice(index+1,0,{id,type:'dialogue',speakerId,illustrationNum:null,position:'none',text:''});return {...s,blocks};}); requestAnimationFrame(()=>dialogueRefs.current[id]?.focus()); };
-  const addEndingDialogueAfter = (endingId,index,speakerId=null) => { const id=uid('line'); updateEnding(endingId,e=>{const blocks=[...(e.blocks||[])];blocks.splice(index+1,0,{id,type:'dialogue',speakerId,illustrationNum:null,position:'none',text:''});return {...e,blocks};}); requestAnimationFrame(()=>dialogueRefs.current[id]?.focus()); };
-  const makeChoiceBlock = () => ({ id:uid('choice'), type:'choice', prompt:'', reactive:false, reactiveTargetId:'', options:[{id:uid('opt'),text:'',targetId:'',responseSpeakerId:null,responseText:''},{id:uid('opt'),text:'',targetId:'',responseSpeakerId:null,responseText:''}] });
-  const addChoiceAfter = (sceneId,index) => { const choice=makeChoiceBlock(); updateScene(sceneId,s=>{const blocks=[...s.blocks];blocks.splice(index+1,0,choice);return {...s,blocks};}); };
-  const addEndingChoiceAfter = (endingId,index) => { const choice=makeChoiceBlock(); updateEnding(endingId,e=>{const blocks=[...(e.blocks||[])];blocks.splice(index+1,0,choice);return {...e,blocks};}); };
-  const handleDialogueKeyDown=(e,sceneId,b,i)=>{if(e.key==='Tab'&&!e.shiftKey&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();addDialogueAfter(sceneId,i,b.speakerId||null);}};
-  const handleEndingKeyDown=(e,id,b,i)=>{if(e.key==='Tab'&&!e.shiftKey&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();addEndingDialogueAfter(id,i,b.speakerId||null);}};
-
-  const addCharacter=()=>{const name=newChar.trim();if(!name)return;updateProject(p=>({...p,characters:[...p.characters,{id:uid('char'),name,illustrations:[]}]}));setNewChar('');};
-  const addScene=()=>{const name=newScene.trim()||`Scene ${String(project.scenes.length+1).padStart(2,'0')}`;const s={id:uid('scene'),name,blocks:[{id:uid('line'),type:'dialogue',speakerId:project.characters[0]?.id||null,illustrationNum:null,position:'none',text:''}]};updateProject(p=>({...p,scenes:[...p.scenes,s]}));setSelectedSceneId(s.id);setNewScene('');setSelectedTab('script');};
-  const addEnding=()=>{const name=newEnding.trim()||`BAD END ${String(project.endings.length+1).padStart(2,'0')}`;const e={id:uid('ending'),name,blocks:[{id:uid('line'),type:'dialogue',speakerId:null,illustrationNum:null,position:'none',text:''}]};updateProject(p=>({...p,endings:[...p.endings,e]}));setNewEnding('');setSelectedTab('endings');setSelectedSceneId(e.id);};
-  const deleteScene=id=>{if(project.scenes.length<=1)return;const arr=project.scenes.filter(s=>s.id!==id);updateProject(p=>({...p,scenes:arr}));if(selectedSceneId===id)setSelectedSceneId(arr[0].id);};
-
-  const addIllustration = async (characterId, file, editId=null, patch=null) => {
-    if (editId && patch) { updateProject(p=>({...p,characters:p.characters.map(c=>c.id===characterId?{...c,illustrations:c.illustrations.map(i=>i.id===editId?{...i,...patch}:i)}:c)})); return; }
-    const img = await resizeImage(file); const c=project.characters.find(x=>x.id===characterId); const nextNum=(c?.illustrations||[]).reduce((m,x)=>Math.max(m,Number(x.num)||0),0)+1;
-    updateProject(p=>({...p,characters:p.characters.map(ch=>ch.id===characterId?{...ch,illustrations:[...ch.illustrations,{id:uid('img'),num:nextNum,dataUrl:img,label:''}]}:ch)}));
-  };
-  const resizeImage = file => new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>{const image=new Image();image.onload=()=>{const maxH=1100;const scale=Math.min(1,maxH/image.height);const w=Math.max(1,Math.round(image.width*scale)),h=Math.max(1,Math.round(image.height*scale));const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;const ctx=canvas.getContext('2d');ctx.drawImage(image,0,0,w,h);resolve(canvas.toDataURL('image/webp',.82));};image.onerror=reject;image.src=reader.result;};reader.onerror=reject;reader.readAsDataURL(file);});
+  const [projects,setProjects]=useState(()=>loadLocalProjects()), [projectId,setProjectId]=useState(()=>localStorage.getItem(LAST_PROJECT_KEY)), [selectedSceneId,setSelectedSceneId]=useState(null), [selectedTab,setSelectedTab]=useState('script');
+  const [user,setUser]=useState(null), [status,setStatus]=useState('저장됨'), [lastSavedAt,setLastSavedAt]=useState(null), [previewMode,setPreviewMode]=useState(false), [previewSceneId,setPreviewSceneId]=useState(null), [previewBlockIndex,setPreviewBlockIndex]=useState(0), [previewEndingId,setPreviewEndingId]=useState(null), [previewReaction,setPreviewReaction]=useState(null);
+  const [mobileCloudOpen,setMobileCloudOpen]=useState(false), [projectMenuOpen,setProjectMenuOpen]=useState(false), [newChar,setNewChar]=useState(''), [newScene,setNewScene]=useState(''), [newEnding,setNewEnding]=useState(''), [shareBusy,setShareBusy]=useState(false), [shareUrl,setShareUrl]=useState(''), [authOpen,setAuthOpen]=useState(false), [sidebarOpen,setSidebarOpen]=useState(true);
+  const [sharedProject,setSharedProject]=useState(null), [sharedLoading,setSharedLoading]=useState(false);
+  const dialogueRefs=useRef({}), projectRef=useRef(null), projectsRef=useRef(projects), dirtyRef=useRef(false);
+  const project=projects[projectId]||Object.values(projects)[0];
+  const currentScene=useMemo(()=>project?.scenes.find(s=>s.id===selectedSceneId)||project?.scenes[0], [project,selectedSceneId]);
+  const currentEnding=useMemo(()=>project?.endings.find(e=>e.id===selectedSceneId)||project?.endings[0], [project,selectedSceneId]);
+  useEffect(()=>{projectsRef.current=projects},[projects]); useEffect(()=>{projectRef.current=project},[project]);
+  useEffect(()=>{if(!projectId||!projects[projectId]){const first=Object.keys(projects)[0];setProjectId(first)}else localStorage.setItem(LAST_PROJECT_KEY,projectId)},[projectId,projects]);
+  useEffect(()=>{if(project&&!selectedSceneId)setSelectedSceneId(project.scenes[0]?.id||project.endings[0]?.id||null)},[project?.id,selectedSceneId]);
+  const replaceProject=useCallback((next,markDirty=true)=>{setProjects(prev=>{const all={...prev,[next.id]:next};saveLocalProjects(all);return all});if(markDirty){dirtyRef.current=true;setStatus('변경됨 · 저장 필요')}},[]);
+  useEffect(()=>{const fn=e=>{const next=e.detail;if(next){replaceProject(next);setProjectId(next.id);setSelectedSceneId(next.scenes[0]?.id||next.endings[0]?.id||null);setSelectedTab('script')}};window.addEventListener('scenario-import',fn);return()=>window.removeEventListener('scenario-import',fn)},[replaceProject]);
+  const saveCloudProject=useCallback(async(p=projectRef.current,silent=false)=>{if(!p)return false;if(!user||!supabase){if(!silent)alert('로그인을 완료한 이후에 저장할 수 있습니다.');setStatus('로그인 필요');return false}if(!silent)setStatus('저장 중…');try{const{error}=await supabase.from('projects').upsert({id:p.id,user_id:user.id,name:p.name,data:p},{onConflict:'id'});if(error)throw error;dirtyRef.current=false;setStatus('저장됨');setLastSavedAt(new Date());if(!silent)alert('저장이 완료되었습니다!');return true}catch(e){setStatus('저장 실패 · 로컬에는 보관됨');if(!silent)alert(`저장에 실패했습니다.\n${e.message||''}`);return false}},[user]);
+  const saveAllLocal=useCallback(()=>saveLocalProjects(projectsRef.current),[]);
+  useEffect(()=>{const timer=setInterval(()=>{if(dirtyRef.current)saveCloudProject(projectRef.current,false);saveAllLocal()},AUTOSAVE_MS);return()=>clearInterval(timer)},[saveCloudProject,saveAllLocal]);
+  useEffect(()=>{const fn=()=>saveAllLocal();window.addEventListener('beforeunload',fn);return()=>window.removeEventListener('beforeunload',fn)},[saveAllLocal]);
+  const loadCloudProjects=useCallback(async currentUser=>{if(!supabase||!currentUser)return;try{const{data,error}=await supabase.from('projects').select('*').eq('user_id',currentUser.id).order('updated_at',{ascending:false});if(error)throw error;const map={};(data||[]).forEach(row=>{if(row.data)map[row.id]=normalizeProject(row.data)});if(!Object.keys(map).length){const p=projectRef.current;await supabase.from('projects').upsert({id:p.id,user_id:currentUser.id,name:p.name,data:p},{onConflict:'id'});map[p.id]=p}setProjects(map);saveLocalProjects(map);const saved=localStorage.getItem(LAST_PROJECT_KEY);setProjectId(saved&&map[saved]?saved:Object.keys(map)[0]);setStatus('클라우드 프로젝트 불러옴');dirtyRef.current=false}catch(e){setStatus('클라우드 불러오기 실패 · 로컬 사용 중')}},[]);
+  const refreshAuth=useCallback(async()=>{if(!supabase)return;const{data}=await supabase.auth.getUser();setUser(data?.user||null);if(data?.user)await loadCloudProjects(data.user)},[loadCloudProjects]);
+  useEffect(()=>{if(!supabase)return;const{data:sub}=supabase.auth.onAuthStateChange((_event,session)=>{setUser(session?.user||null);if(session?.user)setTimeout(()=>loadCloudProjects(session.user),0)});refreshAuth();return()=>sub.subscription.unsubscribe()},[refreshAuth,loadCloudProjects]);
+  const updateProject=useCallback(updater=>{const next=typeof updater==='function'?updater(projectRef.current):updater;replaceProject(next,true)},[replaceProject]);
+  const updateScene=(id,updater)=>updateProject(p=>({...p,scenes:p.scenes.map(s=>s.id===id?(typeof updater==='function'?updater(s):updater):s)}));
+  const updateEnding=(id,updater)=>updateProject(p=>({...p,endings:p.endings.map(e=>e.id===id?(typeof updater==='function'?updater(e):updater):e)}));
+  const updateBlock=(sceneId,blockId,updater)=>updateScene(sceneId,s=>({...s,blocks:s.blocks.map(b=>b.id===blockId?(typeof updater==='function'?updater(b):updater):b)}));
+  const deleteBlock=(sceneId,id)=>updateScene(sceneId,s=>({...s,blocks:s.blocks.filter(b=>b.id!==id)}));
+  const addDialogueAfter=(sceneId,index,prevBlock=null)=>{const id=uid('line');const inherited=prevBlock?.type==='dialogue'&&prevBlock.speakerId?{speakerId:prevBlock.speakerId,illustrationNum:prevBlock.illustrationNum??null,position:prevBlock.position||'none',bounce:Boolean(prevBlock.bounce)}:{speakerId:null,illustrationNum:null,position:'none',bounce:false};updateScene(sceneId,s=>{const blocks=[...s.blocks];blocks.splice(index+1,0,{id,type:'dialogue',...inherited,text:''});return{...s,blocks}});requestAnimationFrame(()=>dialogueRefs.current[id]?.focus())};
+  const addEndingDialogueAfter=(endingId,index,prevBlock=null)=>{const id=uid('line');const inherited=prevBlock?.type==='dialogue'&&prevBlock.speakerId?{speakerId:prevBlock.speakerId,illustrationNum:prevBlock.illustrationNum??null,position:prevBlock.position||'none',bounce:Boolean(prevBlock.bounce)}:{speakerId:null,illustrationNum:null,position:'none',bounce:false};updateEnding(endingId,e=>{const blocks=[...(e.blocks||[])];blocks.splice(index+1,0,{id,type:'dialogue',...inherited,text:''});return{...e,blocks}});requestAnimationFrame(()=>dialogueRefs.current[id]?.focus())};
+  const makeChoiceBlock=()=>({id:uid('choice'),type:'choice',prompt:'',reactive:false,reactiveTargetId:'',options:[{id:uid('opt'),text:'',targetId:'',responseSpeakerId:null,responseText:''},{id:uid('opt'),text:'',targetId:'',responseSpeakerId:null,responseText:''}]});
+  const addChoiceAfter=(sceneId,index)=>{const choice=makeChoiceBlock();updateScene(sceneId,s=>{const blocks=[...s.blocks];blocks.splice(index+1,0,choice);return{...s,blocks}})};
+  const addEndingChoiceAfter=(endingId,index)=>{const choice=makeChoiceBlock();updateEnding(endingId,e=>{const blocks=[...(e.blocks||[])];blocks.splice(index+1,0,choice);return{...e,blocks}})};
+  const addBackgroundAfter=(itemId,index,isEnding=false)=>{const block={id:uid('bgbar'),type:'background',backgroundId:project.backgrounds[0]?.id||null};(isEnding?updateEnding:updateScene)(itemId,x=>{const blocks=[...x.blocks];blocks.splice(index+1,0,block);return{...x,blocks}})};
+  const handleDialogueKeyDown=(e,id,b,i)=>{if(e.key==='Tab'&&!e.shiftKey&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();addDialogueAfter(id,i,b)}};
+  const handleEndingKeyDown=(e,id,b,i)=>{if(e.key==='Tab'&&!e.shiftKey&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();addEndingDialogueAfter(id,i,b)}};
+  const addCharacter=()=>{const name=newChar.trim();if(!name)return;updateProject(p=>({...p,characters:[...p.characters,{id:uid('char'),name,illustrations:[]}]}));setNewChar('')};
+  const addScene=(chapterId=null)=>{const ch=chapterId||currentScene?.chapterId||project.chapters[0]?.id;const count=project.scenes.length+1;const s={id:uid('scene'),name:`Scene ${String(count).padStart(2,'0')}`,chapterId:ch||null,blocks:[{id:uid('line'),type:'dialogue',speakerId:project.characters[0]?.id||null,illustrationNum:null,position:'none',bounce:false,text:''}]};updateProject(p=>({...p,scenes:[...p.scenes,s],chapters:p.chapters.map(c=>c.id===ch?{...c,sceneIds:[...c.sceneIds,s.id]}:c)}));setSelectedSceneId(s.id);setSelectedTab('script');setNewScene('')};
+  const addChapter=()=>{const c={id:uid('chapter'),name:`Chapter ${String(project.chapters.length+1).padStart(2,'0')}`,collapsed:false,sceneIds:[]};updateProject(p=>({...p,chapters:[...p.chapters,c]}));setSelectedTab('script')};
+  const renameChapter=(id,name)=>updateProject(p=>({...p,chapters:p.chapters.map(c=>c.id===id?{...c,name}:c)}));
+  const toggleChapter=id=>updateProject(p=>({...p,chapters:p.chapters.map(c=>c.id===id?{...c,collapsed:!c.collapsed}:c)}));
+  const moveScene=(id,direction)=>updateProject(p=>{const arr=[...p.scenes],i=arr.findIndex(s=>s.id===id),j=i+direction;if(i<0||j<0||j>=arr.length)return p;[arr[i],arr[j]]=[arr[j],arr[i]];return{...p,scenes:arr,chapters:p.chapters.map(c=>({...c,sceneIds:arr.filter(s=>s.chapterId===c.id).map(s=>s.id)}))}});
+  const moveSceneToChapter=(sceneId,chapterId)=>updateProject(p=>({...p,scenes:p.scenes.map(s=>s.id===sceneId?{...s,chapterId}:s),chapters:p.chapters.map(c=>({...c,sceneIds:p.scenes.filter(s=>(s.id===sceneId?chapterId:s.chapterId)===c.id).map(s=>s.id)}))}));
+  const deleteScene=id=>{if(project.scenes.length<=1)return;const arr=project.scenes.filter(s=>s.id!==id);updateProject(p=>({...p,scenes:arr,chapters:p.chapters.map(c=>({...c,sceneIds:c.sceneIds.filter(x=>x!==id)}))}));if(selectedSceneId===id)setSelectedSceneId(arr[0].id)};
+  const addEnding=()=>{const name=newEnding.trim()||`BAD END ${String(project.endings.length+1).padStart(2,'0')}`,e={id:uid('ending'),name,blocks:[{id:uid('line'),type:'dialogue',speakerId:null,illustrationNum:null,position:'none',bounce:false,text:''}]};updateProject(p=>({...p,endings:[...p.endings,e]}));setNewEnding('');setSelectedTab('endings');setSelectedSceneId(e.id)};
+  const addBackground=async file=>{const dataUrl=await resizeImage(file,1600);updateProject(p=>({...p,backgrounds:[...p.backgrounds,{id:uid('bg'),name:file.name.replace(/\.[^.]+$/,''),dataUrl}]}))};
+  const updateBackground=(id,patch)=>updateProject(p=>({...p,backgrounds:p.backgrounds.map(b=>b.id===id?{...b,...patch}:b)}));
+  const deleteBackground=id=>updateProject(p=>({...p,backgrounds:p.backgrounds.filter(b=>b.id!==id),scenes:p.scenes.map(s=>({...s,blocks:s.blocks.map(b=>b.type==='background'&&b.backgroundId===id?{...b,backgroundId:null}:b)})),endings:p.endings.map(e=>({...e,blocks:e.blocks.map(b=>b.type==='background'&&b.backgroundId===id?{...b,backgroundId:null}:b)}))}));
+  const addIllustration=async(characterId,file,editId=null,patch=null)=>{if(editId&&patch){updateProject(p=>({...p,characters:p.characters.map(c=>c.id===characterId?{...c,illustrations:c.illustrations.map(i=>i.id===editId?{...i,...patch}:i)}:c)}));return}const img=await resizeImage(file,1100),c=project.characters.find(x=>x.id===characterId),nextNum=(c?.illustrations||[]).reduce((m,x)=>Math.max(m,Number(x.num)||0),0)+1;updateProject(p=>({...p,characters:p.characters.map(ch=>ch.id===characterId?{...ch,illustrations:[...ch.illustrations,{id:uid('img'),num:nextNum,dataUrl:img,label:''}]}:ch)}))};
+  const resizeImage=(file,maxH)=>new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>{const image=new Image();image.onload=()=>{const scale=Math.min(1,maxH/image.height),w=Math.max(1,Math.round(image.width*scale)),h=Math.max(1,Math.round(image.height*scale)),canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;const ctx=canvas.getContext('2d');ctx.drawImage(image,0,0,w,h);resolve(canvas.toDataURL('image/webp',.82))};image.onerror=reject;image.src=reader.result};reader.onerror=reject;reader.readAsDataURL(file)});
   const deleteIllustration=(cid,iid)=>updateProject(p=>({...p,characters:p.characters.map(c=>c.id===cid?{...c,illustrations:c.illustrations.filter(i=>i.id!==iid)}:c)}));
-
-  const startPreview=()=>{setPreviewMode(true);setPreviewSceneId(project.scenes[0]?.id||null);setPreviewBlockIndex(0);setPreviewEndingId(null);setPreviewReaction(null);};
-  const previewScene=project.scenes.find(s=>s.id===previewSceneId); const previewBlock=previewScene?.blocks?.[previewBlockIndex];
-  const goPreviewNext=targetId=>{setPreviewReaction(null);const s=project.scenes.find(x=>x.id===targetId),e=project.endings.find(x=>x.id===targetId);if(s){setPreviewSceneId(s.id);setPreviewBlockIndex(0);return;}if(e){setPreviewSceneId(null);setPreviewBlockIndex(0);setPreviewEndingId(e.id);}};
-  const selectPreviewOption=(block,opt)=>{if(block.reactive&&opt.responseText?.trim()){setPreviewReaction({speakerId:opt.responseSpeakerId||null,text:opt.responseText,targetId:block.reactiveTargetId||null});return;}goPreviewNext(block.reactive?block.reactiveTargetId:opt.targetId);};
-  const illustrationFor=(speakerId,num)=>{const c=project.characters.find(x=>x.id===speakerId);return c?.illustrations?.find(i=>Number(i.num)===Number(num))?.dataUrl || c?.illustrations?.[0]?.dataUrl;};
-
-  const createShare=async()=>{
-    if(!supabase||!user){alert('미리보기 링크 공유는 로그인 후 사용할 수 있어.');return;}
-    setShareBusy(true); try { const token=uid('share'); const payload={token,user_id:user.id,project_name:project.name,data:project}; const {error}=await supabase.from('preview_shares').insert(payload); if(error)throw error; const url=`${window.location.origin}${import.meta.env.BASE_URL}?preview=${encodeURIComponent(token)}`; setShareUrl(url); await navigator.clipboard?.writeText(url); } catch(e){console.error(e);alert(`공유 링크 생성에 실패했어.\n${e.message||''}`);} finally{setShareBusy(false);}
-  };
-  const [sharedProject,setSharedProject]=useState(null); const [sharedLoading,setSharedLoading]=useState(false);
-  useEffect(()=>{const token=new URLSearchParams(window.location.search).get('preview');if(!token||!supabase)return;setSharedLoading(true);supabase.from('preview_shares').select('data,project_name').eq('token',token).maybeSingle().then(({data,error})=>{if(!error&&data?.data)setSharedProject(normalizeProject(data.data));}).finally(()=>setSharedLoading(false));},[]);
-  if(new URLSearchParams(window.location.search).has('preview')) return <SharedPreview project={sharedProject} loading={sharedLoading} />;
-
-  if(!project) return null;
+  const startPreview=()=>{setPreviewMode(true);setPreviewSceneId(project.scenes[0]?.id||null);setPreviewBlockIndex(0);setPreviewEndingId(null);setPreviewReaction(null)};
+  const previewScene=project.scenes.find(s=>s.id===previewSceneId), previewBlock=previewScene?.blocks?.[previewBlockIndex];
+  const goPreviewNext=targetId=>{setPreviewReaction(null);const s=project.scenes.find(x=>x.id===targetId),e=project.endings.find(x=>x.id===targetId);if(s){setPreviewSceneId(s.id);setPreviewBlockIndex(0);return}if(e){setPreviewSceneId(null);setPreviewBlockIndex(0);setPreviewEndingId(e.id)}};
+  const selectPreviewOption=(block,opt)=>{if(block.reactive&&opt.responseText?.trim()){setPreviewReaction({speakerId:opt.responseSpeakerId||null,text:opt.responseText,targetId:block.reactiveTargetId||null,bounce:false});return}goPreviewNext(block.reactive?block.reactiveTargetId:opt.targetId)};
+  const illustrationFor=(speakerId,num)=>{const c=project.characters.find(x=>x.id===speakerId);return c?.illustrations?.find(i=>Number(i.num)===Number(num))?.dataUrl||c?.illustrations?.[0]?.dataUrl};
+  const createShare=async()=>{if(!supabase||!user)return alert('미리보기 링크 공유는 로그인 후 사용할 수 있어.');setShareBusy(true);try{const token=uid('share'),payload={token,user_id:user.id,project_name:project.name,data:project},r=await supabase.from('preview_shares').insert(payload);if(r.error)throw r.error;const url=`${appBaseUrl()}?preview=${encodeURIComponent(token)}`;setShareUrl(url);await navigator.clipboard?.writeText(url)}catch(e){alert(`공유 링크 생성에 실패했어.\n${e.message||''}`)}finally{setShareBusy(false)}};
+  useEffect(()=>{const token=new URLSearchParams(window.location.search).get('preview');if(!token||!supabase)return;setSharedLoading(true);supabase.from('preview_shares').select('data,project_name').eq('token',token).maybeSingle().then(({data})=>{if(data?.data)setSharedProject(normalizeProject(data.data))}).finally(()=>setSharedLoading(false))},[]);
+  if(new URLSearchParams(window.location.search).has('preview'))return <SharedPreview project={sharedProject} loading={sharedLoading}/>;
+  if(!project)return null;
   const projectsList=Object.values(projects);
-  const projectSelect=async id=>{if(id===project.id)return; if(dirtyRef.current) await saveCloudProject(project,false); setProjectId(id); setSelectedSceneId(projects[id]?.scenes?.[0]?.id||projects[id]?.endings?.[0]?.id||null);setSelectedTab('script');setProjectMenuOpen(false);};
-  const createProject=async()=>{const name=prompt('새 프로젝트 이름을 입력해줘.','새 게임 프로젝트');if(!name?.trim())return;const p=starterProject(name.trim());replaceProject(p,false);setProjectId(p.id);setSelectedSceneId(p.scenes[0].id);setSelectedTab('script');setProjectMenuOpen(false);if(user)await saveCloudProject(p,false);};
-  const deleteProject=async()=>{if(projectsList.length<=1)return alert('프로젝트가 하나는 남아 있어야 해.');if(!confirm(`「${project.name}」 프로젝트를 삭제할까?`))return;if(supabase&&user)await supabase.from('projects').delete().eq('id',project.id).eq('user_id',user.id);const copy={...projects};delete copy[project.id];setProjects(copy);saveLocalProjects(copy);const id=Object.keys(copy)[0];setProjectId(id);setSelectedSceneId(copy[id].scenes[0]?.id||null);setProjectMenuOpen(false);};
+  const projectSelect=async id=>{if(id===project.id)return;if(dirtyRef.current)await saveCloudProject(project,false);setProjectId(id);setSelectedSceneId(projects[id]?.scenes?.[0]?.id||projects[id]?.endings?.[0]?.id||null);setSelectedTab('script');setProjectMenuOpen(false)};
+  const createProject=async()=>{const name=prompt('새 프로젝트 이름을 입력해줘.','새 게임 프로젝트');if(!name?.trim())return;const p=starterProject(name.trim());replaceProject(p,false);setProjectId(p.id);setSelectedSceneId(p.scenes[0].id);setSelectedTab('script');setProjectMenuOpen(false);if(user)await saveCloudProject(p,false)};
+  const deleteProject=async()=>{if(projectsList.length<=1)return alert('프로젝트가 하나는 남아 있어야 해.');if(!confirm(`「${project.name}」 프로젝트를 삭제할까?`))return;if(supabase&&user)await supabase.from('projects').delete().eq('id',project.id).eq('user_id',user.id);const copy={...projects};delete copy[project.id];setProjects(copy);saveLocalProjects(copy);const id=Object.keys(copy)[0];setProjectId(id);setSelectedSceneId(copy[id].scenes[0]?.id||null);setProjectMenuOpen(false)};
   const saveNow=()=>saveCloudProject(project,false);
-
-  return <div className="app-shell">
+  return <div className={`app-shell ${sidebarOpen?'':'sidebar-collapsed'}`}>
     <aside className="sidebar"><div className="brand"><div className="brand-mark">S</div><div><div className="brand-title">Scenario Editor</div><div className="brand-sub">visual novel writing tool</div></div></div>
       <div className="sidebar-section"><div className="section-heading">PROJECT</div><div className="project-switcher"><button className="project-switcher-btn" onClick={()=>setProjectMenuOpen(v=>!v)}><span>{project.name}</span><span>⌄</span></button>{projectMenuOpen&&<div className="project-menu">{projectsList.map(p=><button key={p.id} className={p.id===project.id?'active':''} onClick={()=>projectSelect(p.id)}>{p.name}</button>)}<div className="project-menu-line"/><button onClick={createProject}>＋ 새 프로젝트</button><button className="project-delete-item" onClick={deleteProject}>프로젝트 삭제</button></div>}</div></div>
-      <div className="sidebar-section grow"><div className="section-row"><div className="section-heading">SCENES</div><button className="mini-add" onClick={addScene}>＋</button></div><div className="nav-list">{project.scenes.map((scene,i)=><button key={scene.id} className={`nav-item ${selectedTab==='script'&&selectedSceneId===scene.id?'active':''}`} onClick={()=>{setSelectedTab('script');setSelectedSceneId(scene.id)}}><span className="nav-index">{String(i+1).padStart(2,'0')}</span><span>{scene.name}</span></button>)}</div><div className="section-row ending-head"><div className="section-heading">ENDINGS</div><button className="mini-add" onClick={addEnding}>＋</button></div><div className="nav-list">{project.endings.map((ending,i)=><button key={ending.id} className={`nav-item ${selectedTab==='endings'&&selectedSceneId===ending.id?'active':''}`} onClick={()=>{setSelectedTab('endings');setSelectedSceneId(ending.id)}}><span className="ending-dot">●</span><span>{ending.name}</span></button>)}</div><button className={`nav-item nav-tab ${selectedTab==='characters'?'active':''}`} onClick={()=>setSelectedTab('characters')}><span className="nav-icon">✦</span><span>등장인물</span></button><button className={`nav-item nav-tab ${selectedTab==='export'?'active':''}`} onClick={()=>setSelectedTab('export')}><span className="nav-icon">↗</span><span>내보내기</span></button></div>
+      <div className="sidebar-section grow"><div className="section-row"><div className="section-heading">SCENES</div><div className="section-tools"><button className="mini-add" title="새 씬" onClick={()=>addScene()}>＋</button><button className="mini-add" title="새 챕터" onClick={addChapter}>📁</button></div></div>{project.chapters.map(ch=><div className="chapter-group" key={ch.id}><div className="chapter-row"><button className="chapter-toggle" onClick={()=>toggleChapter(ch.id)}>{ch.collapsed?'⌃':'⌄'}</button><input value={ch.name} onChange={e=>renameChapter(ch.id,e.target.value)} /><button className="chapter-add" title="이 챕터에 씬 추가" onClick={()=>addScene(ch.id)}>＋</button></div>{!ch.collapsed&&<div className="nav-list">{project.scenes.filter(s=>s.chapterId===ch.id).map(scene=>{const idx=project.scenes.findIndex(s=>s.id===scene.id);return <button key={scene.id} className={`nav-item scene-nav-item ${selectedTab==='script'&&selectedSceneId===scene.id?'active':''}`} onClick={()=>{setSelectedTab('script');setSelectedSceneId(scene.id)}}><span className="nav-index">{String(idx+1).padStart(2,'0')}</span><span className="scene-nav-name">{scene.name}</span><span className="scene-order"><i onClick={e=>{e.stopPropagation();moveScene(scene.id,-1)}}>↑</i><i onClick={e=>{e.stopPropagation();moveScene(scene.id,1)}}>↓</i></span></button>})}</div>}</div>)}<div className="section-row ending-head"><div className="section-heading">ENDINGS</div><button className="mini-add" onClick={addEnding}>＋</button></div><div className="nav-list">{project.endings.map((ending,i)=><button key={ending.id} className={`nav-item ${selectedTab==='endings'&&selectedSceneId===ending.id?'active':''}`} onClick={()=>{setSelectedTab('endings');setSelectedSceneId(ending.id)}}><span className="ending-dot">●</span><span>{ending.name}</span></button>)}</div><button className={`nav-item nav-tab ${selectedTab==='characters'?'active':''}`} onClick={()=>setSelectedTab('characters')}><span className="nav-icon">✦</span><span>등장인물</span></button><button className={`nav-item nav-tab ${selectedTab==='backgrounds'?'active':''}`} onClick={()=>setSelectedTab('backgrounds')}><span className="nav-icon">▧</span><span>배경</span></button><button className={`nav-item nav-tab ${selectedTab==='export'?'active':''}`} onClick={()=>setSelectedTab('export')}><span className="nav-icon">↗</span><span>내보내기</span></button></div>
       <div className="sidebar-bottom"><AuthBox user={user} onUserChange={setUser} onRefresh={refreshAuth}/><div className="save-status"><span className="status-dot"/>{status}{lastSavedAt&&<span className="saved-time"> · {lastSavedAt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>}</div></div>
     </aside>
-    <main className="main-area"><header className="topbar"><div className="topbar-left"><span className="crumb">{selectedTab==='script'?currentScene?.name:selectedTab==='characters'?'등장인물':selectedTab==='endings'?'엔딩':selectedTab==='export'?'내보내기':'미리보기'}</span><span className="slash">/</span><span className="muted-text">{project.name}</span></div><div className="topbar-actions"><button className="auth-top-btn" onClick={()=>setAuthOpen(true)}>{user ? '👤 로그인됨' : '로그인 / 회원가입'}</button><button className="save-btn" onClick={saveNow}>저장</button><button className="preview-btn" onClick={startPreview}>▶ 미리보기</button></div></header>
+    <main className="main-area"><header className="topbar"><div className="topbar-left"><button className="hamburger" onClick={()=>setSidebarOpen(v=>!v)} aria-label="탭 열기/닫기">☰</button><span className="crumb">{selectedTab==='script'?currentScene?.name:selectedTab==='characters'?'등장인물':selectedTab==='endings'?'엔딩':selectedTab==='backgrounds'?'배경':selectedTab==='export'?'내보내기':'미리보기'}</span><span className="slash">/</span><input className="project-inline-input" value={project.name} onChange={e=>updateProject(p=>({...p,name:e.target.value}))} /></div><div className="topbar-actions"><button className="auth-top-btn" onClick={()=>setAuthOpen(true)}>{user?'👤 로그인됨':'로그인 / 회원가입'}</button><button className="save-btn" onClick={saveNow}>저장</button><button className="preview-btn" onClick={startPreview}>▶ 미리보기</button></div></header>
       {authOpen&&<div className="auth-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setAuthOpen(false)}}><div className="auth-modal"><div className="auth-modal-head"><div><div className="eyebrow">ACCOUNT</div><h2>{user?'계정':'로그인 / 회원가입'}</h2></div><button className="modal-close" onClick={()=>setAuthOpen(false)}>×</button></div><AuthBox user={user} onUserChange={setUser} onRefresh={refreshAuth}/></div></div>}
       {shareUrl&&<div className="share-banner"><span>미리보기 전용 링크가 생성됐어.</span><input readOnly value={shareUrl}/><button onClick={()=>navigator.clipboard?.writeText(shareUrl)}>복사</button><button onClick={()=>setShareUrl('')}>×</button></div>}
-      <nav className="mobile-nav"><div className="mobile-nav-main"><button className={selectedTab==='script'?'active':''} onClick={()=>setSelectedTab('script')}>대본</button><button className={selectedTab==='characters'?'active':''} onClick={()=>setSelectedTab('characters')}>등장인물</button><button className={selectedTab==='endings'?'active':''} onClick={()=>setSelectedTab('endings')}>엔딩</button><button className={selectedTab==='export'?'active':''} onClick={()=>setSelectedTab('export')}>내보내기</button><button onClick={()=>setMobileCloudOpen(v=>!v)}>☁ 계정</button></div>{selectedTab==='script'&&<select className="mobile-scene-select" value={selectedSceneId||''} onChange={e=>setSelectedSceneId(e.target.value)}>{project.scenes.map((s,i)=><option key={s.id} value={s.id}>{String(i+1).padStart(2,'0')} · {s.name}</option>)}</select>}{selectedTab==='endings'&&<select className="mobile-scene-select" value={selectedSceneId||''} onChange={e=>setSelectedSceneId(e.target.value)}>{project.endings.map((s,i)=><option key={s.id} value={s.id}>BAD END {String(i+1).padStart(2,'0')} · {s.name}</option>)}</select>}{mobileCloudOpen&&<div className="mobile-cloud-panel"><AuthBox user={user} onUserChange={setUser} onRefresh={refreshAuth}/></div>}</nav>
+      <nav className="mobile-nav"><div className="mobile-nav-main"><button className={selectedTab==='script'?'active':''} onClick={()=>setSelectedTab('script')}>대본</button><button className={selectedTab==='characters'?'active':''} onClick={()=>setSelectedTab('characters')}>등장인물</button><button className={selectedTab==='endings'?'active':''} onClick={()=>setSelectedTab('endings')}>엔딩</button><button className={selectedTab==='backgrounds'?'active':''} onClick={()=>setSelectedTab('backgrounds')}>배경</button><button className={selectedTab==='export'?'active':''} onClick={()=>setSelectedTab('export')}>내보내기</button></div>{selectedTab==='script'&&<select className="mobile-scene-select" value={selectedSceneId||''} onChange={e=>setSelectedSceneId(e.target.value)}>{project.scenes.map((s,i)=><option key={s.id} value={s.id}>{String(i+1).padStart(2,'0')} · {s.name}</option>)}</select>}{selectedTab==='endings'&&<select className="mobile-scene-select" value={selectedSceneId||''} onChange={e=>setSelectedSceneId(e.target.value)}>{project.endings.map((s,i)=><option key={s.id} value={s.id}>BAD END {String(i+1).padStart(2,'0')} · {s.name}</option>)}</select>}{mobileCloudOpen&&<div className="mobile-cloud-panel"><AuthBox user={user} onUserChange={setUser} onRefresh={refreshAuth}/></div>}</nav>
       <div className="content-wrap">
-        {selectedTab==='script'&&currentScene&&<section className="editor-card"><div className="editor-header"><div><input className="scene-title-input" value={currentScene.name} onChange={e=>updateScene(currentScene.id,s=>({...s,name:e.target.value}))}/><div className="editor-hint"><kbd>Tab</kbd> → 다음 행 생성 + 이전 캐릭터 자동 상속 · <b>Num.</b>은 일러스트 버전 · <b>Position</b>은 좌/우 표시</div></div><button className="danger-text-btn" onClick={()=>deleteScene(currentScene.id)} disabled={project.scenes.length<=1}>씬 삭제</button></div>
-          <ScriptEditor project={project} scene={currentScene} updateBlock={updateBlock} addDialogueAfter={addDialogueAfter} addChoiceAfter={addChoiceAfter} handleDialogueKeyDown={handleDialogueKeyDown} dialogueRefs={dialogueRefs} deleteBlock={deleteBlock} updateScene={updateScene}/>
-        </section>}
-        {selectedTab==='characters'&&<section className="library-card"><div className="library-header"><div><div className="eyebrow">CHARACTER LIBRARY</div><h1>등장인물</h1><p>캐릭터 이름과 모든 반신 일러스트를 여기서 관리해. 대본에서는 등록된 일러스트의 Num.만 선택해.</p></div><div className="inline-form"><input value={newChar} onChange={e=>setNewChar(e.target.value)} placeholder="캐릭터 이름" onKeyDown={e=>e.key==='Enter'&&addCharacter()}/><button className="dark-btn" onClick={addCharacter}>캐릭터 추가</button></div></div><div className="character-library">{project.characters.map(character=><div className="character-card-large" key={character.id}><div className="character-card-top"><div className="character-avatar">{character.name.slice(0,1)}</div><input value={character.name} onChange={e=>updateProject(p=>({...p,characters:p.characters.map(c=>c.id===character.id?{...c,name:e.target.value}:c)}))}/><button className="row-delete" onClick={()=>updateProject(p=>({...p,characters:p.characters.filter(c=>c.id!==character.id),scenes:p.scenes.map(s=>({...s,blocks:s.blocks.map(b=>b.type==='dialogue'&&b.speakerId===character.id?{...b,speakerId:null,illustrationNum:null,position:'none'}:b)})),endings:p.endings.map(en=>({...en,blocks:en.blocks.map(b=>b.type==='dialogue'&&b.speakerId===character.id?{...b,speakerId:null,illustrationNum:null,position:'none'}:b)}))}))}>삭제</button></div><IllustrationStrip character={character} onAdd={(file,id,patch)=>addIllustration(character.id,file,id,patch)} onDelete={iid=>deleteIllustration(character.id,iid)}/></div>)}{!project.characters.length&&<div className="empty-state">등록된 캐릭터가 없어.</div>}</div></section>}
-        {selectedTab==='export'&&<section className="editor-card export-card"><div className="editor-header"><div><div className="eyebrow">EXPORT</div><h1 className="export-title">내보내기</h1><div className="editor-hint">현재 프로젝트를 JSON / INK / Unity용 ZIP으로 저장하거나 JSON 백업을 불러올 수 있어.</div></div></div><div className="export-grid"><div className="export-item"><b>JSON</b><span>에디터 백업 파일</span><button className="dark-btn" onClick={()=>downloadText(makeJson(project),`${safeName(project.name)}.json`)}>JSON 저장</button><label className="ghost-btn import-btn">JSON 불러오기<input type="file" accept="application/json,.json" hidden onChange={e=>{const f=e.target.files?.[0];e.target.value='';if(!f)return;const r=new FileReader();r.onload=()=>{try{const next=normalizeProject(JSON.parse(r.result).project||JSON.parse(r.result));replaceProject(next);setProjectId(next.id);setSelectedSceneId(next.scenes[0]?.id||null);}catch{alert('JSON을 읽지 못했어.')}};r.readAsText(f)}}/></label></div><div className="export-item"><b>INK</b><span>Ink 스토리 소스</span><button className="dark-btn" onClick={()=>downloadText(makeInk(project),`${safeName(project.name)}.ink`)}>INK 저장</button></div><div className="export-item"><b>UNITY</b><span>Unity 작업용 패키지</span><button className="dark-btn" onClick={()=>exportUnity(project)}>Unity Export .zip</button></div></div></section>}
-        {selectedTab==='endings'&&currentEnding&&<section className="editor-card ending-script-editor"><div className="editor-header"><div><div className="eyebrow">ENDING SCRIPT</div><input className="scene-title-input" value={currentEnding.name} onChange={e=>updateEnding(currentEnding.id,en=>({...en,name:e.target.value}))}/><div className="editor-hint">엔딩도 일반 씬과 같은 대본 방식이야. <kbd>Tab</kbd>으로 캐릭터를 유지하면서 다음 줄을 추가할 수 있어.</div></div><button className="danger-text-btn" onClick={()=>{if(project.endings.length<=1)return;const arr=project.endings.filter(e=>e.id!==currentEnding.id);updateProject(p=>({...p,endings:arr,scenes:p.scenes.map(s=>({...s,blocks:s.blocks.map(b=>b.type==='choice'?{...b,options:b.options.map(o=>o.targetId===currentEnding.id?{...o,targetId:''}:o),reactiveTargetId:b.reactiveTargetId===currentEnding.id?'':b.reactiveTargetId}:b)}))}));setSelectedSceneId(arr[0]?.id||null)}} disabled={project.endings.length<=1}>엔딩 삭제</button></div><div className="ending-name-row"><span className="ending-tag">BAD END {String(project.endings.findIndex(e=>e.id===currentEnding.id)+1).padStart(2,'0')}</span></div><ScriptEditor project={project} scene={currentEnding} isEnding updateBlock={null} addDialogueAfter={addEndingDialogueAfter} addChoiceAfter={addEndingChoiceAfter} handleDialogueKeyDown={handleEndingKeyDown} dialogueRefs={dialogueRefs} deleteBlock={null} updateScene={null} updateEnding={updateEnding}/></section>}
+        {selectedTab==='script'&&currentScene&&<section className="editor-card"><div className="editor-header"><div><input className="scene-title-input" value={currentScene.name} onChange={e=>updateScene(currentScene.id,s=>({...s,name:e.target.value}))}/><div className="scene-meta-row"><span>CHAPTER</span><select value={currentScene.chapterId||''} onChange={e=>moveSceneToChapter(currentScene.id,e.target.value)}>{project.chapters.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></div><div className="editor-hint"><kbd>Tab</kbd> → 이전 캐릭터 + Num. + Position + Bounce 자동 상속 · <b>...</b> 입력은 <b>···</b>으로 자동 변환</div></div><button className="danger-text-btn" onClick={()=>deleteScene(currentScene.id)} disabled={project.scenes.length<=1}>씬 삭제</button></div><ScriptEditor project={project} scene={currentScene} updateBlock={updateBlock} deleteBlock={deleteBlock} replaceBlocks={blocks=>updateScene(currentScene.id,s=>({...s,blocks}))} addDialogueAfter={addDialogueAfter} addChoiceAfter={addChoiceAfter} addBackgroundAfter={addBackgroundAfter} handleDialogueKeyDown={handleDialogueKeyDown} dialogueRefs={dialogueRefs}/></section>}
+        {selectedTab==='characters'&&<section className="library-card"><div className="library-header"><div><div className="eyebrow">CHARACTER LIBRARY</div><h1>등장인물</h1><p>캐릭터 이름과 반신 일러스트를 관리해.</p></div><div className="inline-form"><input value={newChar} onChange={e=>setNewChar(e.target.value)} placeholder="캐릭터 이름" onKeyDown={e=>e.key==='Enter'&&addCharacter()}/><button className="dark-btn" onClick={addCharacter}>캐릭터 추가</button></div></div><div className="character-library">{project.characters.map(character=><div className="character-card-large" key={character.id}><div className="character-card-top"><div className="character-avatar">{character.name.slice(0,1)}</div><input value={character.name} onChange={e=>updateProject(p=>({...p,characters:p.characters.map(c=>c.id===character.id?{...c,name:e.target.value}:c)}))}/><button className="row-delete" onClick={()=>updateProject(p=>({...p,characters:p.characters.filter(c=>c.id!==character.id)}))}>삭제</button></div><IllustrationStrip character={character} onAdd={(file,id,patch)=>addIllustration(character.id,file,id,patch)} onDelete={iid=>deleteIllustration(character.id,iid)}/></div>)}</div></section>}
+        {selectedTab==='backgrounds'&&<section className="library-card"><div className="library-header"><div><div className="eyebrow">BACKGROUND LIBRARY</div><h1>배경</h1><p>등록한 배경을 대본의 [배경 바]에서 선택할 수 있어.</p></div><label className="dark-btn upload-large">＋ 배경 등록<input type="file" accept="image/*" hidden onChange={e=>{const f=e.target.files?.[0];e.target.value='';if(f)addBackground(f)}}/></label></div><div className="background-grid">{project.backgrounds.map(bg=><div className="background-card" key={bg.id}><div className="background-thumb">{bg.dataUrl?<img src={bg.dataUrl} alt=""/>:<span>NO IMAGE</span>}</div><input value={bg.name} onChange={e=>updateBackground(bg.id,{name:e.target.value})}/><button className="row-delete" onClick={()=>deleteBackground(bg.id)}>삭제</button></div>)}{!project.backgrounds.length&&<div className="empty-state">등록된 배경이 없어. 먼저 배경을 등록해줘.</div>}</div></section>}
+        {selectedTab==='export'&&<ExportPanel project={project}/>} 
+        {selectedTab==='endings'&&currentEnding&&<section className="editor-card ending-script-editor"><div className="editor-header"><div><div className="eyebrow">ENDING SCRIPT</div><input className="scene-title-input" value={currentEnding.name} onChange={e=>updateEnding(currentEnding.id,en=>({...en,name:e.target.value}))}/><div className="editor-hint">엔딩도 씬과 같은 대본 방식이야.</div></div><button className="danger-text-btn" onClick={()=>{if(project.endings.length<=1)return;const arr=project.endings.filter(e=>e.id!==currentEnding.id);updateProject(p=>({...p,endings:arr}));setSelectedSceneId(arr[0]?.id||null)}} disabled={project.endings.length<=1}>엔딩 삭제</button></div><div className="ending-name-row"><span className="ending-tag">BAD END {String(project.endings.findIndex(e=>e.id===currentEnding.id)+1).padStart(2,'0')}</span></div><ScriptEditor project={project} scene={currentEnding} updateBlock={(id,fn)=>updateEnding(currentEnding.id,e=>({...e,blocks:e.blocks.map(b=>b.id===id?fn(b):b)}))} deleteBlock={id=>updateEnding(currentEnding.id,e=>({...e,blocks:e.blocks.filter(b=>b.id!==id)}))} replaceBlocks={blocks=>updateEnding(currentEnding.id,e=>({...e,blocks}))} addDialogueAfter={addEndingDialogueAfter} addChoiceAfter={addEndingChoiceAfter} addBackgroundAfter={addBackgroundAfter} handleDialogueKeyDown={handleEndingKeyDown} dialogueRefs={dialogueRefs} isEnding/></section>}
       </div></main>
       {previewMode&&<PreviewOverlay project={project} previewSceneId={previewSceneId} previewBlockIndex={previewBlockIndex} setPreviewBlockIndex={setPreviewBlockIndex} previewEndingId={previewEndingId} setPreviewSceneId={setPreviewSceneId} setPreviewEndingId={setPreviewEndingId} previewReaction={previewReaction} setPreviewReaction={setPreviewReaction} goPreviewNext={goPreviewNext} previewScene={previewScene} previewBlock={previewBlock} selectPreviewOption={selectPreviewOption} illustrationFor={illustrationFor} close={()=>setPreviewMode(false)} createShare={createShare} shareBusy={shareBusy}/>}</div>;
 }
 
-function ScriptEditor({project,scene,isEnding=false,updateBlock:externalUpdateBlock,addDialogueAfter,addChoiceAfter,handleDialogueKeyDown,dialogueRefs,deleteBlock:externalDeleteBlock,updateScene,updateEnding}) {
-  const updateBlock=(id,fn)=>isEnding?updateEnding(scene.id,e=>({...e,blocks:e.blocks.map(b=>b.id===id?fn(b):b)})):externalUpdateBlock(scene.id,id,fn);
-  const deleteBlock=id=>isEnding?updateEnding(scene.id,e=>({...e,blocks:e.blocks.filter(b=>b.id!==id)})):externalDeleteBlock(scene.id,id);
-  return <div className="script-table"><div className="table-head"><div className="speaker-head">CHARACTER</div><div>NUM.</div><div>POSITION</div><div>DIALOGUE</div><div className="table-actions-head"/></div><div className="block-list">{scene.blocks.map((block,index)=>block.type==='dialogue'?<div className="script-row" key={block.id}><div className="speaker-cell"><select value={block.speakerId||''} onChange={e=>updateBlock(block.id,b=>({...b,speakerId:e.target.value||null,illustrationNum:e.target.value?b.illustrationNum:null,position:e.target.value?b.position:'none'}))}><option value="">(독백)</option>{project.characters.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></div><div className="num-cell"><select value={block.illustrationNum??''} onChange={e=>updateBlock(block.id,b=>({...b,illustrationNum:e.target.value?Number(e.target.value):null}))} disabled={!block.speakerId}><option value="">—</option>{(project.characters.find(c=>c.id===block.speakerId)?.illustrations||[]).map(img=><option key={img.id} value={img.num}>{img.num}</option>)}</select></div><div className="position-cell"><div className="position-buttons"><button aria-label="왼쪽에 일러스트 표시" title="왼쪽" className={(block.position||'none')==='left'?'selected':''} disabled={!block.speakerId} onClick={()=>updateBlock(block.id,b=>({...b,position:b.position==='left'?'none':'left'}))}>{(block.position||'none')==='left'?'●':'○'}</button><button aria-label="오른쪽에 일러스트 표시" title="오른쪽" className={(block.position||'none')==='right'?'selected':''} disabled={!block.speakerId} onClick={()=>updateBlock(block.id,b=>({...b,position:b.position==='right'?'none':'right'}))}>{(block.position||'none')==='right'?'●':'○'}</button></div></div><textarea ref={el=>dialogueRefs.current[block.id]=el} className="dialogue-cell" value={block.text||''} placeholder="대사를 입력하세요…" onChange={e=>updateBlock(block.id,b=>({...b,text:normalizeDialogueText(e.target.value)}))} onKeyDown={e=>handleDialogueKeyDown(e,scene.id,block,index)} rows={1}/><div className="row-actions"><button title="위로" onClick={()=>{if(index===0)return;const arr=[...scene.blocks];[arr[index-1],arr[index]]=[arr[index],arr[index-1]];isEnding?updateEnding(scene.id,e=>({...e,blocks:arr})):updateScene(scene.id,s=>({...s,blocks:arr}))}}>↑</button><button title="아래로" onClick={()=>{if(index===scene.blocks.length-1)return;const arr=[...scene.blocks];[arr[index+1],arr[index]]=[arr[index],arr[index+1]];isEnding?updateEnding(scene.id,e=>({...e,blocks:arr})):updateScene(scene.id,s=>({...s,blocks:arr}))}}>↓</button><button title="삭제" onClick={()=>deleteBlock(block.id)}>×</button><button className="insert-choice-btn" title="이 대사 아래에 선택지 추가" onClick={()=>addChoiceAfter(scene.id,index)}>＋ 선택지</button></div></div>:<ChoiceBlock key={block.id} block={block} project={project} updateBlock={updateBlock} deleteBlock={deleteBlock}/>)}</div><div className="editor-footer-actions"><button className="add-dialogue-btn" onClick={()=>addDialogueAfter(scene.id,scene.blocks.length-1,scene.blocks.at(-1)?.speakerId||null)}>＋ 대사</button><button className="add-choice-btn" onClick={()=>addChoiceAfter(scene.id,scene.blocks.length-1)}>＋ 선택지</button></div></div>;
-}
-function ChoiceBlock({block,project,updateBlock,deleteBlock}) { return <div className="choice-block"><div className="choice-title-row"><div className="choice-label">CHOICE</div><input className="choice-prompt" value={block.prompt||''} placeholder="선택지 앞에 표시할 안내문 (선택)" onChange={e=>updateBlock(block.id,b=>({...b,prompt:e.target.value}))}/><label className="choice-toggle"><input type="checkbox" checked={Boolean(block.reactive)} onChange={e=>updateBlock(block.id,b=>({...b,reactive:e.target.checked,reactiveTargetId:e.target.checked?(b.reactiveTargetId||b.options?.[0]?.targetId||''):b.reactiveTargetId}))}/><span>반응형 선택지</span></label><button className="row-delete" onClick={()=>deleteBlock(block.id)}>×</button></div>{block.reactive&&<><div className="choice-helper">선택 후 1줄의 반응 대사만 보여주고 모든 선택지는 같은 다음 Scene/Ending으로 이어져.</div><div className="reactive-target-row"><span>공통 다음</span><span>→</span><select value={block.reactiveTargetId||''} onChange={e=>updateBlock(block.id,b=>({...b,reactiveTargetId:e.target.value}))}><option value="">대상 선택</option><optgroup label="Scenes">{project.scenes.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</optgroup><optgroup label="Endings">{project.endings.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}</optgroup></select></div></>}<div className="options-list">{(block.options||[]).map((o,i)=><div className="option-wrap" key={o.id}><div className="option-row"><span className="option-number">{i+1}</span><input value={o.text} placeholder="선택지" onChange={e=>updateBlock(block.id,b=>({...b,options:b.options.map(x=>x.id===o.id?{...x,text:e.target.value}:x)}))}/>{!block.reactive&&<><span className="arrow">→</span><select value={o.targetId||''} onChange={e=>updateBlock(block.id,b=>({...b,options:b.options.map(x=>x.id===o.id?{...x,targetId:e.target.value}:x)}))}><option value="">대상 선택</option><optgroup label="Scenes">{project.scenes.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</optgroup><optgroup label="Endings">{project.endings.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}</optgroup></select></>}<button className="row-delete" onClick={()=>updateBlock(block.id,b=>({...b,options:b.options.filter(x=>x.id!==o.id)}))}>×</button></div>{block.reactive&&<div className="reaction-row"><span className="reaction-label">반응 대사</span><select value={o.responseSpeakerId||''} onChange={e=>updateBlock(block.id,b=>({...b,options:b.options.map(x=>x.id===o.id?{...x,responseSpeakerId:e.target.value||null}:x)}))}><option value="">독백</option>{project.characters.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select><input value={o.responseText||''} placeholder="선택 후 보여줄 1줄 대사" onChange={e=>updateBlock(block.id,b=>({...b,options:b.options.map(x=>x.id===o.id?{...x,responseText:normalizeDialogueText(e.target.value)}:x)}))}/></div>}</div>)}</div><button className="add-option-btn" onClick={()=>updateBlock(block.id,b=>({...b,options:[...(b.options||[]),{id:uid('opt'),text:'',targetId:'',responseSpeakerId:null,responseText:''}]}))}>＋ 선택지</button></div>; }
-
-function TypewriterText({ text, speed = 28, onDone }) {
-  const [shown, setShown] = useState('');
-  const doneRef = useRef(false);
-  useEffect(() => {
-    const source = String(text || ' ');
-    setShown(''); doneRef.current = false;
-    let i = 0;
-    const timer = setInterval(() => {
-      i += 1;
-      setShown(source.slice(0, i));
-      if (i >= source.length) {
-        clearInterval(timer);
-        if (!doneRef.current) { doneRef.current = true; onDone?.(); }
-      }
-    }, speed);
-    return () => clearInterval(timer);
-  }, [text, speed, onDone]);
-  return <span>{shown}</span>;
+function ScriptEditor({project,scene,isEnding=false,updateBlock,deleteBlock,replaceBlocks,addDialogueAfter,addChoiceAfter,addBackgroundAfter,handleDialogueKeyDown,dialogueRefs}) {
+  const reorder=(index,direction)=>{const next=index+direction;if(next<0||next>=scene.blocks.length)return;const arr=[...scene.blocks];[arr[index],arr[next]]=[arr[next],arr[index]];replaceBlocks(arr)};
+  return <div className="script-table"><div className="table-head"><div className="speaker-head">CHARACTER</div><div>NUM.</div><div>POSITION</div><div>BOUNCE</div><div>DIALOGUE</div><div/></div><div className="block-list">{scene.blocks.map((block,index)=>block.type==='dialogue'?<div className="script-row" key={block.id}><div className="speaker-cell"><select value={block.speakerId||''} onChange={e=>{const sid=e.target.value||null;updateBlock(block.id,b=>({...b,speakerId:sid,illustrationNum:sid?b.illustrationNum:null,position:sid?b.position:'none',bounce:sid?b.bounce:false}))}}><option value="">(독백)</option>{project.characters.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></div><div className="num-cell"><select value={block.illustrationNum??''} onChange={e=>updateBlock(block.id,b=>({...b,illustrationNum:e.target.value?Number(e.target.value):null}))} disabled={!block.speakerId}><option value="">—</option>{(project.characters.find(c=>c.id===block.speakerId)?.illustrations||[]).map(img=><option key={img.id} value={img.num}>{img.num}</option>)}</select></div><div className="position-cell"><div className="position-buttons"><button aria-label="왼쪽" className={block.position==='left'?'selected':''} disabled={!block.speakerId} onClick={()=>updateBlock(block.id,b=>({...b,position:b.position==='left'?'none':'left'}))}>{block.position==='left'?'●':'○'}</button><button aria-label="오른쪽" className={block.position==='right'?'selected':''} disabled={!block.speakerId} onClick={()=>updateBlock(block.id,b=>({...b,position:b.position==='right'?'none':'right'}))}>{block.position==='right'?'●':'○'}</button></div></div><div className="bounce-cell"><input type="checkbox" checked={Boolean(block.bounce)} disabled={!block.speakerId} onChange={e=>updateBlock(block.id,b=>({...b,bounce:e.target.checked}))}/></div><textarea ref={el=>dialogueRefs.current[block.id]=el} className="dialogue-cell" value={block.text||''} placeholder="대사를 입력하세요…" onChange={e=>updateBlock(block.id,b=>({...b,text:normalizeDialogueText(e.target.value)}))} onKeyDown={e=>handleDialogueKeyDown(e,scene.id,block,index)} rows={1}/><div className="row-actions"><button title="위로" disabled={index===0} onClick={()=>reorder(index,-1)}>↑</button><button title="아래로" disabled={index===scene.blocks.length-1} onClick={()=>reorder(index,1)}>↓</button><button title="삭제" onClick={()=>deleteBlock(block.id)}>×</button><button className="insert-choice-btn" onClick={()=>addChoiceAfter(scene.id,index)}>＋ 선택지</button></div></div>:block.type==='background'?<BackgroundBar key={block.id} block={block} project={project} updateBlock={updateBlock} deleteBlock={deleteBlock}/>:<ChoiceBlock key={block.id} block={block} project={project} updateBlock={updateBlock} deleteBlock={deleteBlock}/>)}</div><div className="editor-footer-actions"><button className="add-dialogue-btn" onClick={()=>addDialogueAfter(scene.id,scene.blocks.length-1,scene.blocks.at(-1))}>＋ 대사</button><button className="add-choice-btn" onClick={()=>addChoiceAfter(scene.id,scene.blocks.length-1)}>＋ 선택지</button><button className="add-background-btn" onClick={()=>addBackgroundAfter(scene.id,scene.blocks.length-1,isEnding)}>＋ 배경</button></div></div>;
 }
 
+function BackgroundBar({block,project,updateBlock,deleteBlock}) { return <div className="background-bar"><span>BACKGROUND</span><select value={block.backgroundId||''} onChange={e=>updateBlock(block.id,b=>({...b,backgroundId:e.target.value||null}))}><option value="">배경 선택</option>{project.backgrounds.map(bg=><option key={bg.id} value={bg.id}>{bg.name}</option>)}</select><button onClick={()=>deleteBlock(block.id)}>×</button></div>; }
+function ChoiceBlock({block,project,updateBlock,deleteBlock}) { return <div className="choice-block"><div className="choice-title-row"><div className="choice-label">CHOICE</div><input className="choice-prompt" value={block.prompt||''} placeholder="선택지 앞에 표시할 안내문 (선택)" onChange={e=>updateBlock(block.id,b=>({...b,prompt:e.target.value}))}/><label className="choice-toggle"><input type="checkbox" checked={Boolean(block.reactive)} onChange={e=>updateBlock(block.id,b=>({...b,reactive:e.target.checked,reactiveTargetId:e.target.checked?(b.reactiveTargetId||b.options?.[0]?.targetId||''):b.reactiveTargetId}))}/><span>반응형 선택지</span></label><button className="row-delete" onClick={()=>deleteBlock(block.id)}>×</button></div>{block.reactive&&<><div className="choice-helper">선택 후 1줄의 반응 대사만 보여주고 모든 선택지는 같은 다음 Scene/Ending으로 이어져.</div><div className="reactive-target-row"><span>공통 다음</span><span>→</span><select value={block.reactiveTargetId||''} onChange={e=>updateBlock(block.id,b=>({...b,reactiveTargetId:e.target.value}))}><option value="">대상 선택</option><optgroup label="Scenes">{project.scenes.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</optgroup><optgroup label="Endings">{project.endings.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}</optgroup></select></div></>}{<div className="options-list">{(block.options||[]).map((o,i)=><div className="option-wrap" key={o.id}><div className="option-row"><span className="option-number">{i+1}</span><input value={o.text} placeholder="선택지" onChange={e=>updateBlock(block.id,b=>({...b,options:b.options.map(x=>x.id===o.id?{...x,text:e.target.value}:x)}))}/>{!block.reactive&&<><span className="arrow">→</span><select value={o.targetId||''} onChange={e=>updateBlock(block.id,b=>({...b,options:b.options.map(x=>x.id===o.id?{...x,targetId:e.target.value}:x)}))}><option value="">대상 선택</option><optgroup label="Scenes">{project.scenes.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</optgroup><optgroup label="Endings">{project.endings.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}</optgroup></select></> }<button className="row-delete" onClick={()=>updateBlock(block.id,b=>({...b,options:b.options.filter(x=>x.id!==o.id)}))}>×</button></div>{block.reactive&&<div className="reaction-row"><span className="reaction-label">반응 대사</span><select value={o.responseSpeakerId||''} onChange={e=>updateBlock(block.id,b=>({...b,options:b.options.map(x=>x.id===o.id?{...x,responseSpeakerId:e.target.value||null}:x)}))}><option value="">독백</option>{project.characters.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select><input value={o.responseText||''} placeholder="선택 후 보여줄 1줄 대사" onChange={e=>updateBlock(block.id,b=>({...b,options:b.options.map(x=>x.id===o.id?{...x,responseText:normalizeDialogueText(e.target.value)}:x)}))}/></div>}</div>)}</div>}<button className="add-option-btn" onClick={()=>updateBlock(block.id,b=>({...b,options:[...(b.options||[]),{id:uid('opt'),text:'',targetId:'',responseSpeakerId:null,responseText:''}]}))}>＋ 선택지</button></div>; }
+
+function ExportPanel({project}) { return <section className="editor-card export-card"><div className="editor-header"><div><div className="eyebrow">EXPORT</div><h1 className="export-title">내보내기</h1><div className="editor-hint">현재 프로젝트의 파일과 분량을 한눈에 확인해.</div></div></div><div className="stats-grid"><div><span>총 대사</span><b>{dialogueCount(project)}줄</b></div><div><span>예상 플레이 타임</span><b>{playTimeText(project)}</b></div></div><div className="export-grid"><div className="export-item"><b>JSON</b><span>에디터 백업 파일</span><button className="dark-btn" onClick={()=>downloadText(makeJson(project),`${safeName(project.name)}.json`)}>JSON 저장</button><label className="ghost-btn import-btn">JSON 불러오기<input type="file" accept="application/json,.json" hidden onChange={e=>{const f=e.target.files?.[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{const next=normalizeProject(JSON.parse(r.result).project||JSON.parse(r.result));window.dispatchEvent(new CustomEvent('scenario-import',{detail:next}))}catch{alert('JSON을 읽지 못했어.')}};r.readAsText(f)}}/></label></div><div className="export-item"><b>TXT</b><span>읽기 쉬운 텍스트 대본</span><button className="dark-btn" onClick={()=>downloadText(makeTxt(project),`${safeName(project.name)}.txt`)}>TXT 저장</button></div><div className="export-item"><b>EXCEL</b><span>Excel에서 열 수 있는 .xls</span><button className="dark-btn" onClick={()=>downloadBlob(new Blob([makeExcelHtml(project)],{type:'application/vnd.ms-excel;charset=utf-8'}),`${safeName(project.name)}.xls`)}>Excel 저장</button></div><div className="export-item"><b>INK</b><span>Ink 스토리 소스</span><button className="dark-btn" onClick={()=>downloadText(makeInk(project),`${safeName(project.name)}.ink`)}>INK 저장</button></div><div className="export-item"><b>UNITY</b><span>Unity 작업용 패키지</span><button className="dark-btn" onClick={()=>exportUnity(project)}>Unity Export .zip</button></div></div></section> }
+
+function TypewriterText({text,speed=28}) { const[shown,setShown]=useState('');useEffect(()=>{const source=String(text||' ');setShown('');let i=0;const timer=setInterval(()=>{i++;setShown(source.slice(0,i));if(i>=source.length)clearInterval(timer)},speed);return()=>clearInterval(timer)},[text,speed]);return <span>{shown}</span> }
+function getBackgroundAt(blocks,index,project) { let bg=null; for(let i=0;i<=index;i++){const b=blocks[i];if(b?.type==='background')bg=project.backgrounds.find(x=>x.id===b.backgroundId)||null} return bg; }
+function nextContentIndex(blocks,index){let i=index;while(i<blocks.length&&blocks[i]?.type==='background')i++;return i}
 function PreviewOverlay({project,previewSceneId,previewBlockIndex,setPreviewBlockIndex,previewEndingId,setPreviewSceneId,setPreviewEndingId,previewReaction,setPreviewReaction,goPreviewNext,previewScene,previewBlock,selectPreviewOption,illustrationFor,close,createShare,shareBusy}) {
-  const showDialogue=(block,next)=>{
-    const img=block?.speakerId&&block?.position!=='none'?illustrationFor(block.speakerId,block.illustrationNum):null;
-    return <div className="visualnovel-preview">
-      {img&&<img className={`preview-character-img ${block.position}`} src={img} alt="" />}
-      <div className="dialogue-box">
-        <div className="preview-speaker">{project.characters.find(c=>c.id===block?.speakerId)?.name||''}</div>
-        <div className="preview-text"><TypewriterText key={`${block?.id||'preview'}-${block?.text||''}`} text={block?.text||' '}/></div>
-        <button className="next-arrow" aria-label="다음" onClick={next}>›</button>
-      </div>
-    </div>
-  };
-  return <div className="preview-overlay"><div className="preview-window"><div className="preview-bar"><div><span className="preview-live-dot"/> PREVIEW</div><div className="preview-bar-actions"><button className="preview-share-btn" onClick={createShare} disabled={shareBusy}>{shareBusy?'링크 생성 중…':'🔗 미리보기 링크'}</button><button onClick={close}>닫기 ×</button></div></div><div className="preview-stage">{previewReaction?showDialogue(previewReaction,()=>goPreviewNext(previewReaction.targetId)):!previewSceneId?(()=>{const e=project.endings.find(x=>x.id===previewEndingId);const b=e?.blocks?.[previewBlockIndex];if(b)return showDialogue(b,()=>previewBlockIndex+1<e.blocks.length?setPreviewBlockIndex(i=>i+1):setPreviewBlockIndex(-1));return <div className="preview-ending-screen"><div className="preview-ending-kicker">ENDING</div><h2>{e?.name||'END'}</h2><p>엔딩 대본이 끝났어.</p><button className="dark-btn" onClick={()=>{setPreviewSceneId(project.scenes[0]?.id||null);setPreviewBlockIndex(0);setPreviewEndingId(null)}}>처음부터</button></div>})():previewBlock?.type==='dialogue'?showDialogue(previewBlock,()=>setPreviewBlockIndex(i=>i+1<previewScene.blocks.length?i+1:0)):previewBlock?.type==='choice'?<div className="choice-preview"><div className="choice-preview-prompt">{previewBlock.prompt||'선택하세요.'}</div>{(previewBlock.options||[]).map(o=><button key={o.id} className="preview-choice" onClick={()=>selectPreviewOption(previewBlock,o)}>{o.text||'선택지'}</button>)}</div>:<div className="preview-empty">더 진행할 내용이 없어.</div>}</div></div></div>;
+  const renderDialogue=(block,next,bg)=>{const img=block?.speakerId&&block.position!=='none'?illustrationFor(block.speakerId,block.illustrationNum):null;return <div className="visualnovel-preview" style={bg?.dataUrl?{backgroundImage:`url(${bg.dataUrl})`}:undefined}>{img&&<img key={`${block.id}-${block.bounce?'b':''}`} className={`preview-character-img ${block.position} ${block.bounce?'bounce':''}`} src={img} alt=""/>}<div className="dialogue-box"><div className="preview-speaker">{project.characters.find(c=>c.id===block?.speakerId)?.name||''}</div><div className="preview-text"><TypewriterText key={`${block?.id||'preview'}-${block?.text||''}`} text={block?.text||' '}/></div><button className="next-arrow" onClick={next}>›</button></div></div>};
+  const contentIndex=previewScene?nextContentIndex(previewScene.blocks,previewBlockIndex):previewBlockIndex; const block=previewScene?.blocks?.[contentIndex];
+  const next=()=>{if(!previewScene)return;const ni=nextContentIndex(previewScene.blocks,contentIndex+1);if(ni<previewScene.blocks.length)setPreviewBlockIndex(ni);else setPreviewBlockIndex(0)};
+  let body;
+  if(previewReaction)body=renderDialogue(previewReaction,()=>goPreviewNext(previewReaction.targetId),previewScene?getBackgroundAt(previewScene.blocks,contentIndex,project):null);
+  else if(!previewSceneId){const e=project.endings.find(x=>x.id===previewEndingId),ei=nextContentIndex(e?.blocks||[],previewBlockIndex),b=e?.blocks?.[ei],bg=e?getBackgroundAt(e.blocks,ei,project):null;if(b)body=renderDialogue(b,()=>ei+1<e.blocks.length?setPreviewBlockIndex(ei+1):setPreviewBlockIndex(-1),bg);else body=<div className="preview-ending-screen"><div className="preview-ending-kicker">ENDING</div><h2>{e?.name||'END'}</h2><p>엔딩 대본이 끝났어.</p><button className="dark-btn" onClick={()=>{setPreviewSceneId(project.scenes[0]?.id||null);setPreviewBlockIndex(0);setPreviewEndingId(null)}}>처음부터</button></div>}
+  else if(block?.type==='dialogue')body=renderDialogue(block,next,getBackgroundAt(previewScene.blocks,contentIndex,project));
+  else if(block?.type==='choice')body=<div className="choice-preview"><div className="choice-preview-prompt">{block.prompt||'선택하세요.'}</div>{(block.options||[]).map(o=><button key={o.id} className="preview-choice" onClick={()=>selectPreviewOption(block,o)}>{o.text||'선택지'}</button>)}</div>;
+  else body=<div className="preview-empty">더 진행할 내용이 없어.</div>;
+  return <div className="preview-overlay"><div className="preview-window"><div className="preview-bar"><div><span className="preview-live-dot"/> PREVIEW</div><div className="preview-bar-actions"><button className="preview-share-btn" onClick={createShare} disabled={shareBusy}>{shareBusy?'링크 생성 중…':'🔗 미리보기 링크'}</button><button onClick={close}>닫기 ×</button></div></div><div className="preview-stage">{body}</div></div></div>;
 }
-
 function SharedPreview({project,loading}) {
-  const [sceneId,setSceneId]=useState(null); const [index,setIndex]=useState(0); const [endingId,setEndingId]=useState(null); const [reaction,setReaction]=useState(null);
-  useEffect(()=>{if(project&&!sceneId)setSceneId(project.scenes[0]?.id||null)},[project,sceneId]);
-  if(loading)return <div className="shared-preview-page">불러오는 중…</div>; if(!project)return <div className="shared-preview-page"><div><h1>미리보기를 찾을 수 없어.</h1><p>링크가 잘못됐거나 삭제됐을 수 있어.</p></div></div>;
-  const scene=project.scenes.find(s=>s.id===sceneId),block=scene?.blocks?.[index]; const go=id=>{const s=project.scenes.find(x=>x.id===id),e=project.endings.find(x=>x.id===id);setReaction(null);if(s){setSceneId(s.id);setIndex(0)}else if(e){setSceneId(null);setEndingId(e.id);setIndex(0)}}; const char=c=>project.characters.find(x=>x.id===c); const img=(b)=>{const c=char(b?.speakerId);return b?.speakerId&&b.position!=='none'?c?.illustrations?.find(i=>Number(i.num)===Number(b.illustrationNum))?.dataUrl||c?.illustrations?.[0]?.dataUrl:null};
-  const dialogue=(b,next)=>{const src=img(b);return <div className="shared-stage">{src&&<img className={`preview-character-img ${b.position}`} src={src} alt=""/>}<div className="dialogue-box"><div className="preview-speaker">{char(b.speakerId)?.name||''}</div><div className="preview-text"><TypewriterText key={`${b?.id||'shared'}-${b?.text||''}`} text={b?.text||' '} /></div><button className="next-arrow" onClick={next}>›</button></div></div>};
-  if(reaction)return <div className="shared-preview-page"><div className="shared-preview-head"><b>{project.name}</b><span>미리보기</span></div>{dialogue(reaction,()=>go(reaction.targetId))}</div>;
-  if(!sceneId){const e=project.endings.find(x=>x.id===endingId),b=e?.blocks?.[index];return <div className="shared-preview-page"><div className="shared-preview-head"><b>{project.name}</b><span>미리보기</span></div>{b?dialogue(b,()=>index+1<e.blocks.length?setIndex(i=>i+1):setIndex(-1)):<div className="preview-ending-screen"><div className="preview-ending-kicker">ENDING</div><h2>{e?.name}</h2><p>엔딩 대본이 끝났어.</p><button className="dark-btn" onClick={()=>{setSceneId(project.scenes[0]?.id||null);setIndex(0);setEndingId(null)}}>처음부터</button></div>}</div>}
-  return <div className="shared-preview-page"><div className="shared-preview-head"><b>{project.name}</b><span>미리보기 전용</span></div>{block?.type==='dialogue'?dialogue(block,()=>setIndex(i=>i+1<scene.blocks.length?i+1:0)):block?.type==='choice'?<div className="choice-preview"><div className="choice-preview-prompt">{block.prompt||'선택하세요.'}</div>{(block.options||[]).map(o=><button className="preview-choice" key={o.id} onClick={()=>{if(block.reactive&&o.responseText?.trim())setReaction({speakerId:o.responseSpeakerId,text:o.responseText,targetId:block.reactiveTargetId});else go(block.reactive?block.reactiveTargetId:o.targetId)}}>{o.text||'선택지'}</button>)}</div>:<div className="preview-empty">더 진행할 내용이 없어.</div>}</div>;
+  const[sceneId,setSceneId]=useState(null),[index,setIndex]=useState(0),[endingId,setEndingId]=useState(null),[reaction,setReaction]=useState(null);useEffect(()=>{if(project&&!sceneId)setSceneId(project.scenes[0]?.id||null)},[project,sceneId]);if(loading)return <div className="shared-preview-page">불러오는 중…</div>;if(!project)return <div className="shared-preview-page"><div><h1>미리보기를 찾을 수 없어.</h1><p>링크가 잘못됐거나 삭제됐을 수 있어.</p></div></div>;
+  const scene=project.scenes.find(s=>s.id===sceneId),ci=scene?nextContentIndex(scene.blocks,index):index,b=scene?.blocks?.[ci],go=id=>{const s=project.scenes.find(x=>x.id===id),e=project.endings.find(x=>x.id===id);setReaction(null);if(s){setSceneId(s.id);setIndex(0)}else if(e){setSceneId(null);setIndex(0);setEndingId(e.id)}};
+  const char=c=>project.characters.find(x=>x.id===c),img=x=>{const c=char(x?.speakerId);return x?.speakerId&&x.position!=='none'?c?.illustrations?.find(i=>Number(i.num)===Number(x.illustrationNum))?.dataUrl||c?.illustrations?.[0]?.dataUrl:null};
+  const dialogue=(x,next,bg)=><div className="shared-stage" style={bg?.dataUrl?{backgroundImage:`url(${bg.dataUrl})`,backgroundSize:'cover',backgroundPosition:'center'}:undefined}>{img(x)&&<img key={`${x.id}-${x.bounce?'b':''}`} className={`preview-character-img ${x.position} ${x.bounce?'bounce':''}`} src={img(x)} alt=""/>}<div className="dialogue-box"><div className="preview-speaker">{char(x.speakerId)?.name||''}</div><div className="preview-text"><TypewriterText key={`${x.id}-${x.text}`} text={x.text||' '}/></div><button className="next-arrow" onClick={next}>›</button></div></div>;
+  if(reaction)return <div className="shared-preview-page"><div className="shared-preview-head"><b>{project.name}</b><span>미리보기</span></div>{dialogue(reaction,()=>go(reaction.targetId),scene?getBackgroundAt(scene.blocks,ci,project):null)}</div>;
+  if(!sceneId){const e=project.endings.find(x=>x.id===endingId),ei=nextContentIndex(e?.blocks||[],index),eb=e?.blocks?.[ei],bg=e?getBackgroundAt(e.blocks,ei,project):null;return <div className="shared-preview-page"><div className="shared-preview-head"><b>{project.name}</b><span>미리보기 전용</span></div>{eb?dialogue(eb,()=>ei+1<e.blocks.length?setIndex(ei+1):setIndex(-1),bg):<div className="preview-ending-screen"><div className="preview-ending-kicker">ENDING</div><h2>{e?.name}</h2><button className="dark-btn" onClick={()=>{setSceneId(project.scenes[0]?.id||null);setIndex(0);setEndingId(null)}}>처음부터</button></div>}</div>}
+  return <div className="shared-preview-page"><div className="shared-preview-head"><b>{project.name}</b><span>미리보기 전용</span></div>{b?.type==='dialogue'?dialogue(b,()=>setIndex(ci+1<scene.blocks.length?ci+1:0),getBackgroundAt(scene.blocks,ci,project)):b?.type==='choice'?<div className="choice-preview"><div className="choice-preview-prompt">{b.prompt||'선택하세요.'}</div>{(b.options||[]).map(o=><button className="preview-choice" key={o.id} onClick={()=>{if(b.reactive&&o.responseText?.trim())setReaction({speakerId:o.responseSpeakerId,text:o.responseText,targetId:b.reactiveTargetId});else go(b.reactive?b.reactiveTargetId:o.targetId)}}>{o.text||'선택지'}</button>)}</div>:<div className="preview-empty">더 진행할 내용이 없어.</div>}</div>;
 }
-
 export default App;
