@@ -1,20 +1,28 @@
-# Scenario Editor v0.5
+# Scenario Editor v1.4
 
-## Added in v0.5
+Visual-novel scenario writing/editor tool for branching stories.
+
+## Current features
 - Multiple projects per account
-- Manual cloud save button + 5-minute autosave
-- Google login button (enable Google provider in Supabase Auth)
+- Manual cloud save + 5-minute autosave
+- Email/password + Google login via Supabase
 - Read-only preview share URLs
-- Character illustration library with multiple numbered variants
-- Dialogue Num. selector and left/right illustration position buttons
-- Preview renders the selected character illustration on the selected side
-- Ending scripts use the same dialogue editor
+- Player-name prompt at preview start
+- `{user}` token replacement with the entered player name
+- Character illustration library with numbered variants
+- Dialogue Num. / left-right position / bounce controls
+- Dialogue, choice, background and map blocks
+- Scene move + scene duplication
+- Chapter folders and scene organization
+- Map editor with selectable locations and per-location scripts
+- Preview with typing effect, illustrations, bounce, choices and maps
+- JSON / TXT / Excel / Ink / Unity export
 
 ## Supabase
-1. Keep the existing `supabase/schema.sql` setup.
-2. Run `supabase/migrate_v0_5.sql` once in Supabase SQL Editor.
-3. Keep using the browser-safe Project URL + Publishable key in `public/supabase-config.js`.
+1. Keep the existing `supabase/schema.sql` setup and migrations.
+2. Keep using the browser-safe Project URL + Publishable key in `public/supabase-config.js`.
+3. `public/supabase-config.js` is intentionally not included in release ZIPs. Keep the local/project copy when replacing files.
 4. Never put a Supabase secret/service_role key in the browser.
 
 ## Google login
-In Supabase Dashboard, enable Google under Authentication Providers and add the GitHub Pages site URL as an allowed redirect URL.
+In Supabase Dashboard, enable Google under Authentication Providers and use the GitHub Pages project URL as an allowed redirect URL.
