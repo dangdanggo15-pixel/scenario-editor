@@ -559,3 +559,32 @@ kbd { display:inline-block; border:1px solid #d7d3cb; background:#f8f6f2; border
   .map-editor .location-editor-head{align-items:stretch}
   .player-name-screen{min-height:calc(100vh - 60px);padding:20px}
 }
+
+/* v1.5: keep dialogue hover actions inside the script row */
+.script-row{position:relative;min-width:0}
+.script-row .row-actions{
+  min-width:max-content;
+  width:max-content;
+  max-width:calc(100% - 10px);
+  overflow:hidden;
+  box-sizing:border-box;
+  justify-content:flex-end;
+  padding:3px 4px;
+  border:1px solid #e2ddd4;
+  border-radius:8px;
+  background:rgba(255,255,255,.97);
+  box-shadow:0 4px 12px rgba(35,31,26,.07);
+}
+.script-row .row-actions .insert-choice-btn,.script-row .row-actions .insert-extra-btn{flex:0 0 auto}
+@media (min-width:721px){
+  .script-row .row-actions{position:absolute;right:7px;top:50%;transform:translateY(-50%);z-index:4}
+  .script-row .dialogue-cell{padding-right:245px}
+}
+@media (max-width:720px){
+  .script-row .row-actions{position:relative;right:auto;top:auto;transform:none;grid-column:1/-1;justify-content:flex-start;margin:0 6px 6px;opacity:1;flex-wrap:wrap;max-width:calc(100% - 12px)}
+  .script-row{grid-template-columns:100px 42px 56px 48px minmax(140px,1fr)}
+  .script-row .dialogue-cell{padding-right:7px}
+}
+
+/* v1.5: location name is edited in a local draft field, so typing never changes selection */
+.location-editor-title input{min-width:0}

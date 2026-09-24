@@ -1,4 +1,4 @@
-# Scenario Editor v1.4
+# Scenario Editor v1.5
 
 Visual-novel scenario writing/editor tool for branching stories.
 

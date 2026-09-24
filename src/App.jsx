@@ -92,7 +92,10 @@ function loadLocalProjects() {
   } catch {}
   const first = starterProject(); return { [first.id]: first };
 }
-function saveLocalProjects(projects) { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects)); }
+function saveLocalProjects(projects) {
+  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects)); }
+  catch (e) { console.warn('로컬 저장을 건너뛰었어:', e); }
+}
 function downloadBlob(blob, filename) { const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
 function downloadText(text, filename, type = 'text/plain;charset=utf-8') { downloadBlob(new Blob([text], { type }), filename); }
 function sceneKey(id) { return `SCENE_${String(id).replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}`; }
@@ -272,6 +275,13 @@ function MapPanel({project,selectedMapId,setSelectedMapId,selectedLocationId,set
   const maps=project.maps||[];
   const map=maps.find(m=>m.id===selectedMapId)||maps[0];
   const loc=map?.locations?.find(l=>l.id===selectedLocationId)||map?.locations?.[0];
+  const [locationNameDraft,setLocationNameDraft]=useState('');
+  useEffect(()=>{setLocationNameDraft(loc?.name||'')},[loc?.id]);
+  const commitLocationName=()=>{
+    if(!map||!loc)return;
+    const next=locationNameDraft.trim() || '이름 없는 장소';
+    if(next!==loc.name) updateMapLocation(map.id,loc.id,{name:next});
+  };
   const updateLocBlock=(id,fn)=>map&&loc&&updateMapLocation(map.id,loc.id,l=>({...l,blocks:l.blocks.map(b=>b.id===id?(typeof fn==='function'?fn(b):fn):b)}));
   const deleteLocBlock=id=>map&&loc&&updateMapLocation(map.id,loc.id,l=>({...l,blocks:l.blocks.filter(b=>b.id!==id)}));
   const replaceLocBlocks=blocks=>map&&loc&&updateMapLocation(map.id,loc.id,l=>({...l,blocks}));
@@ -290,7 +300,7 @@ function MapPanel({project,selectedMapId,setSelectedMapId,selectedLocationId,set
           {!map.locations.length&&<div className="empty-state compact-empty">장소를 추가해줘.</div>}
         </div>
         {loc&&<div className="location-script-area">
-          <div className="location-editor-head"><div className="location-editor-title"><div className="eyebrow">LOCATION SCRIPT</div><input value={loc.name} onChange={e=>updateMapLocation(map.id,loc.id,{name:e.target.value})} placeholder="장소 이름"/></div><button className="row-delete" onClick={()=>{const next=map.locations.find(x=>x.id!==loc.id);deleteLocation(map.id,loc.id);setSelectedLocationId(next?.id||null)}}>장소 삭제</button></div>
+          <div className="location-editor-head"><div className="location-editor-title"><div className="eyebrow">LOCATION SCRIPT</div><input value={locationNameDraft} onChange={e=>setLocationNameDraft(e.target.value)} onBlur={commitLocationName} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();e.currentTarget.blur()}}} placeholder="장소 이름"/></div><button className="row-delete" onClick={()=>{const next=map.locations.find(x=>x.id!==loc.id);deleteLocation(map.id,loc.id);setSelectedLocationId(next?.id||null)}}>장소 삭제</button></div>
           <ScriptEditor project={project} scene={loc} updateBlock={(sid,id,fn)=>updateLocBlock(id,fn)} deleteBlock={id=>deleteLocBlock(id)} replaceBlocks={replaceLocBlocks} addDialogueAfter={(sid,index,prev)=>addLocDialogue(index,prev)} addChoiceAfter={(sid,index)=>addLocChoice(index)} addBackgroundAfter={(sid,index)=>addLocBackground(index)} addMapBarAfter={()=>{}} handleDialogueKeyDown={(e,id,b,i)=>{if(e.key==='Tab'&&!e.shiftKey&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();addLocDialogue(i,b)}}} dialogueRefs={dialogueRefs} isEnding/>
         </div>}
       </div>:null}
@@ -300,7 +310,11 @@ function MapPanel({project,selectedMapId,setSelectedMapId,selectedLocationId,set
 
 function ExportPanel({project}) { return <section className="editor-card export-card"><div className="editor-header"><div><div className="eyebrow">EXPORT</div><h1 className="export-title">내보내기</h1><div className="editor-hint">현재 프로젝트의 파일과 분량을 한눈에 확인해.</div></div></div><div className="stats-grid"><div><span>총 대사</span><b>{dialogueCount(project)}줄</b></div><div><span>총 글자 수</span><b>{characterCount(project).toLocaleString()}자</b></div><div><span>예상 플레이 타임</span><b>{playTimeText(project)}</b></div></div><div className="export-grid"><div className="export-item"><b>JSON</b><span>에디터 백업 파일</span><button className="dark-btn" onClick={()=>downloadText(makeJson(project),`${safeName(project.name)}.json`)}>JSON 저장</button><label className="ghost-btn import-btn">JSON 불러오기<input type="file" accept="application/json,.json" hidden onChange={e=>{const f=e.target.files?.[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{const next=normalizeProject(JSON.parse(r.result).project||JSON.parse(r.result));window.dispatchEvent(new CustomEvent('scenario-import',{detail:next}))}catch{alert('JSON을 읽지 못했어.')}};r.readAsText(f)}}/></label></div><div className="export-item"><b>TXT</b><span>읽기 쉬운 텍스트 대본</span><button className="dark-btn" onClick={()=>downloadText(makeTxt(project),`${safeName(project.name)}.txt`)}>TXT 저장</button></div><div className="export-item"><b>EXCEL</b><span>Excel에서 열 수 있는 .xls</span><button className="dark-btn" onClick={()=>downloadBlob(new Blob([makeExcelHtml(project)],{type:'application/vnd.ms-excel;charset=utf-8'}),`${safeName(project.name)}.xls`)}>Excel 저장</button></div><div className="export-item"><b>INK</b><span>Ink 스토리 소스</span><button className="dark-btn" onClick={()=>downloadText(makeInk(project),`${safeName(project.name)}.ink`)}>INK 저장</button></div><div className="export-item"><b>UNITY</b><span>Unity 작업용 패키지</span><button className="dark-btn" onClick={()=>exportUnity(project)}>Unity Export .zip</button></div></div></section> }
 
-function replaceUserTokens(value, playerName) { return String(value ?? '').replace(/\{user\}/gi, playerName || '{user}'); }
+function replaceUserTokens(value, playerName) {
+  const name = String(playerName ?? '').trim();
+  if (!name) return String(value ?? '');
+  return String(value ?? '').replace(/(?:\{\s*user\s*\}|｛\s*user\s*｝)/gi, name);
+}
 
 function TypewriterText({text,speed=28}) { const[shown,setShown]=useState('');useEffect(()=>{const source=String(text||' ');setShown('');let i=0;const timer=setInterval(()=>{i++;setShown(source.slice(0,i));if(i>=source.length)clearInterval(timer)},speed);return()=>clearInterval(timer)},[text,speed]);return <span>{shown}</span> }
 function getBackgroundAt(blocks,index,project) { let bg=null; for(let i=0;i<=index;i++){const b=blocks[i];if(b?.type==='background')bg=project.backgrounds.find(x=>x.id===b.backgroundId)||null} return bg; }
