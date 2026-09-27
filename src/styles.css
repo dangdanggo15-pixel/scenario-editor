@@ -674,3 +674,59 @@ kbd { display:inline-block; border:1px solid #d7d3cb; background:#f8f6f2; border
   .script-row .row-actions{opacity:0;pointer-events:none}
   .script-row:focus-within .row-actions{opacity:1;pointer-events:auto}
 }
+
+
+/* v1.8 reactive-choice cleanup */
+.reaction-editor{margin:6px 0 4px 31px;padding:6px 8px;border:1px solid #e6e1d9;border-radius:6px;background:#fcfbf8}
+.reaction-editor-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 5px;color:#817a71;font-size:9px;font-weight:800}
+.reaction-editor-head>span{display:flex;align-items:baseline;gap:7px;min-width:0}
+.reaction-editor-head>span::after{content:'이 선택지를 고른 뒤 보여줄 대사를 추가해줘.';font-size:8px;font-weight:500;color:#aaa39a;white-space:nowrap}
+.reaction-add-btn{height:24px;flex:0 0 auto;border:1px solid #ded8cf;background:#fff;border-radius:5px;color:#706a61;font-size:8px;padding:0 7px;cursor:pointer}
+.reaction-add-btn:hover{background:#f6f3ee}
+.reaction-empty{display:none}
+.reaction-row{grid-template-columns:18px 120px minmax(0,1fr) 22px;gap:5px;align-items:center;padding:2px 0}
+.reaction-row select,.reaction-row input{height:28px;padding:5px 7px;font-size:9px;border-radius:5px}
+.reaction-delete{font-size:14px;padding:2px}
+
+/* v1.8 MAPS collapse: shrink the whole sidebar so the work area expands */
+.map-layout.maps-collapsed{grid-template-columns:42px minmax(0,1fr)!important}
+.map-layout.maps-collapsed .map-list{padding:12px 7px!important;overflow:hidden}
+.map-layout.maps-collapsed .map-list-head{justify-content:center;margin:0}
+.map-layout.maps-collapsed .map-list-title,.map-layout.maps-collapsed .map-list>button,.map-layout.maps-collapsed .map-list>.empty-state{display:none}
+.map-layout.maps-collapsed .map-list-toggle{display:block}
+
+/* v1.8 log: chronological order, newest stays at the bottom; scroll upward for older lines */
+.preview-log-list{display:flex;flex-direction:column;justify-content:flex-start;overflow-y:auto}
+@media(max-width:720px){
+  .reaction-editor{margin-left:0}
+  .reaction-editor-head>span::after{white-space:normal}
+  .reaction-row{grid-template-columns:18px 100px minmax(0,1fr) 22px}
+  .map-layout.maps-collapsed{grid-template-columns:40px minmax(0,1fr)!important}
+}
+
+
+/* v1.9 dialogue width fix
+   The action buttons are visually overlaid on the right side of the row,
+   so they no longer consume a grid column. The dialogue field therefore
+   uses the full available width of the DIALOGUE area. */
+@media (min-width:721px){
+  .table-head,.script-row{grid-template-columns:180px 58px 76px 62px minmax(0,1fr) 0px}
+  .script-row .dialogue-cell{
+    grid-column:5;
+    width:100%;
+    min-width:0;
+    box-sizing:border-box;
+    padding-right:14px;
+  }
+  .script-row .row-actions{
+    grid-column:6;
+    position:absolute;
+    right:7px;
+    top:50%;
+    transform:translateY(-50%);
+    z-index:5;
+  }
+}
+@media (min-width:721px) and (max-width:900px){
+  .table-head,.script-row{grid-template-columns:145px 50px 65px 50px minmax(0,1fr) 0px}
+}

@@ -280,9 +280,9 @@ function BackgroundBar({block,project,updateBlock,deleteBlock,index,reorder}) { 
 function MapBar({block,project,updateBlock,deleteBlock,index,reorder}) { return <div className="map-bar"><span>🗺 MAP</span><select value={block.mapId||''} onChange={e=>updateBlock(block.id,b=>({...b,mapId:e.target.value||null}))}><option value="">맵 선택</option>{(project.maps||[]).map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</select><div className="bar-move"><button className="bar-move-btn" disabled={index===0} onClick={()=>reorder(index,-1)}>↑</button><button className="bar-move-btn" disabled={index===999} onClick={()=>reorder(index,1)}>↓</button></div><button className="bar-delete" onClick={()=>deleteBlock(block.id)}>×</button></div>; }
 function ChoiceBlock({block,project,updateBlock,deleteBlock}) {
   const updateOption=(optionId,patch)=>updateBlock(block.id,b=>({...b,options:(b.options||[]).map(o=>o.id===optionId?{...o,...patch}:o)}));
-  const addResponseLine=optionId=>updateOption(optionId,{responseLines:[...(block.options||[]).find(o=>o.id===optionId)?.responseLines||[],{id:uid('reaction'),speakerId:null,text:''}]});
-  const updateResponseLine=(optionId,lineId,patch)=>updateOption(optionId,{responseLines:((block.options||[]).find(o=>o.id===optionId)?.responseLines||[]).map(line=>line.id===lineId?{...line,...patch}:line)});
-  const deleteResponseLine=(optionId,lineId)=>updateOption(optionId,{responseLines:((block.options||[]).find(o=>o.id===optionId)?.responseLines||[]).filter(line=>line.id!==lineId)});
+  const addResponseLine=optionId=>updateBlock(block.id,b=>({...b,options:(b.options||[]).map(o=>{if(o.id!==optionId)return o;const current=Array.isArray(o.responseLines)?o.responseLines:[];return {...o,responseLines:[...current,{id:uid('reaction'),speakerId:null,text:''}]};})}));
+  const updateResponseLine=(optionId,lineId,patch)=>updateBlock(block.id,b=>({...b,options:(b.options||[]).map(o=>o.id===optionId?{...o,responseLines:(Array.isArray(o.responseLines)?o.responseLines:[]).map(line=>line.id===lineId?{...line,...patch}:line)}:o)}));
+  const deleteResponseLine=(optionId,lineId)=>updateBlock(block.id,b=>({...b,options:(b.options||[]).map(o=>o.id===optionId?{...o,responseLines:(Array.isArray(o.responseLines)?o.responseLines:[]).filter(line=>line.id!==lineId)}:o)}));
   const targetOptions=<><option value="">대상 선택</option><optgroup label="Scenes">{project.scenes.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</optgroup><optgroup label="Endings">{project.endings.map(e=><option key={e.id} value={e.id}>{e.name}</option>)}</optgroup></>;
   return <div className="choice-block">
     <div className="choice-title-row">
@@ -300,7 +300,7 @@ function ChoiceBlock({block,project,updateBlock,deleteBlock}) {
     </>}
     <div className="options-list">
       {(block.options||[]).map((o,i)=>{
-        const lines=responseLinesFor(o);
+        const lines=Array.isArray(o.responseLines)?o.responseLines:[];
         return <div className="option-wrap" key={o.id}>
           <div className="option-row">
             <span className="option-number">{i+1}</span>
@@ -370,10 +370,10 @@ function replaceUserTokens(value, playerName) {
   return text.replace(/[｛{]\s*(?:user|name)\s*[｝}]/giu, name);
 }
 
-function TypewriterText({text,speed=28}) { const[shown,setShown]=useState('');useEffect(()=>{const source=String(text||' ');setShown('');let i=0;const timer=setInterval(()=>{i++;setShown(source.slice(0,i));if(i>=source.length)clearInterval(timer)},Math.max(8,speed));return()=>clearInterval(timer)},[text,speed]);return <span>{shown}</span> }
+function TypewriterText({text,speed=28}) { const[shown,setShown]=useState('');const speedRef=useRef(speed);useEffect(()=>{speedRef.current=speed},[speed]);useEffect(()=>{const source=String(text||' ');setShown('');let i=0,last=performance.now();const timer=setInterval(()=>{const now=performance.now();if(now-last>=Math.max(8,speedRef.current)){last=now;i++;setShown(source.slice(0,i));if(i>=source.length)clearInterval(timer)}},8);return()=>clearInterval(timer)},[text]);return <span>{shown}</span> }
 function PreviewLog({entries,open,onClose}) {
   const listRef=useRef(null);
-  useEffect(()=>{if(open&&listRef.current)listRef.current.scrollTop=0},[open,entries.length]);
+  useEffect(()=>{if(open&&listRef.current)listRef.current.scrollTop=listRef.current.scrollHeight},[open,entries.length]);
   if(!open)return null;
   return <div className="preview-log-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><div className="preview-log"><div className="preview-log-head"><b>LOG</b><button onClick={onClose}>×</button></div><div className="preview-log-list" ref={listRef}>{entries.length?entries.map((entry,i)=><div className="preview-log-item" key={`${entry.key}-${i}`}><div className="preview-log-speaker">{entry.speaker||' '}</div><div className="preview-log-text">{entry.text}</div></div>):<div className="preview-log-empty">아직 본 대사가 없어.</div>}</div></div></div>
 }
@@ -457,7 +457,7 @@ function PreviewOverlay({project,previewSceneId,previewBlockIndex,setPreviewBloc
   const [logOpen,setLogOpen]=useState(false);
   const [logEntries,setLogEntries]=useState([]);
   const display=v=>replaceUserTokens(v,playerName);
-  const addLog=useCallback(entry=>{if(!entry?.text)return;setLogEntries(prev=>prev.some(x=>x.key===entry.key)?prev:[{...entry,text:display(entry.text)},...prev])},[playerName]);
+  const addLog=useCallback(entry=>{if(!entry?.text)return;setLogEntries(prev=>prev.some(x=>x.key===entry.key)?prev:[...prev,{...entry,text:display(entry.text)}])},[playerName]);
   const contentIndex=previewScene?nextContentIndex(previewScene.blocks,previewBlockIndex):previewBlockIndex;
   const block=previewScene?.blocks?.[contentIndex];
   const next=useCallback(()=>{if(!previewScene)return;const ni=nextContentIndex(previewScene.blocks,contentIndex+1);if(ni<previewScene.blocks.length)setPreviewBlockIndex(ni);else setPreviewBlockIndex(0)},[previewScene,contentIndex,setPreviewBlockIndex]);
@@ -480,7 +480,7 @@ function SharedPreview({project,loading}) {
   useEffect(()=>{if(project&&!sceneId)setSceneId(project.scenes[0]?.id||null)},[project,sceneId]);
   const display=v=>replaceUserTokens(v,playerName);
   const scene=project?.scenes.find(s=>s.id===sceneId),ci=scene?nextContentIndex(scene.blocks,index):index,b=scene?.blocks?.[ci];
-  const addLog=useCallback(entry=>{if(!entry?.text)return;setLogEntries(prev=>prev.some(x=>x.key===entry.key)?prev:[{...entry,text:display(entry.text)},...prev])},[playerName]);
+  const addLog=useCallback(entry=>{if(!entry?.text)return;setLogEntries(prev=>prev.some(x=>x.key===entry.key)?prev:[...prev,{...entry,text:display(entry.text)}])},[playerName]);
   const go=id=>{const targetScene=project?.scenes.find(x=>x.id===id),e=project?.endings.find(x=>x.id===id);setReaction(null);if(targetScene){setSceneId(targetScene.id);setIndex(0)}else if(e){setSceneId(null);setIndex(0);setEndingId(e.id)}};
   const char=c=>project?.characters.find(x=>x.id===c),imgForShared=pr=>(speakerId,num,position)=>{const c=pr?.characters.find(ch=>ch.id===speakerId);return speakerId&&position!=='none'?c?.illustrations?.find(i=>Number(i.num)===Number(num))?.dataUrl||c?.illustrations?.[0]?.dataUrl:null};
   const advanceScene=useCallback(()=>{if(!scene)return;setIndex(ci+1<scene.blocks.length?ci+1:0)},[scene,ci]);
